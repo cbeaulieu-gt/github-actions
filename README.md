@@ -61,8 +61,9 @@ on:
     types: [created]
 
 # Permissions must be declared at workflow level when calling reusable workflows.
+# contents: write is safe here — issue_comment always runs in the base repo context.
 permissions:
-  contents: read
+  contents: write
   issues: write
   pull-requests: write
 
