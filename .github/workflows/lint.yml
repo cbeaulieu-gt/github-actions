@@ -8,3 +8,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: raven-actions/actionlint@v2
+      - name: Lint composite actions
+        shell: bash
+        run: |
+          curl -sL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
+          ./actionlint \
+            pr-review/action.yml \
+            tag-claude/action.yml \
+            check-auth/action.yml \
+            apply-fix/action.yml
