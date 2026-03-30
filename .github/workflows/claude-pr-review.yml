@@ -30,41 +30,9 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
-    # secret resolution: workflow_call passes claude_code_oauth_token via secrets;
-    # pull_request uses CLAUDE_CODE_OAUTH_TOKEN from this repo's own secrets.
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set diff scope
-        shell: bash
-        run: |
-          # shellcheck disable=SC2016
-          if [ "${{ github.event.action }}" = "synchronize" ]; then
-            printf '%s\n' 'DIFF_INSTRUCTION=This is a synchronize event (new commits were pushed to the PR). Start by running `git diff ${{ github.event.before }} ${{ github.event.after }}` to see only the changes in this push.\n\nAfter inspecting the diff, use your judgment: if the changes touch foundational or widely-shared code — such as base classes, abstract classes, interfaces, shared utilities, type definitions, schemas, authentication/authorization logic, or configuration files that many other files depend on — then also run `gh pr diff ${{ github.event.pull_request.number }}` to get the full PR context before completing your review.\n\nIf the changes are isolated (self-contained features, local logic, tests, docs), review only the incremental changes and do not re-review files already covered in previous commits.' >> "$GITHUB_ENV"
-          else
-            printf '%s\n' 'DIFF_INSTRUCTION=Use `gh pr diff ${{ github.event.pull_request.number }}` to retrieve the full PR diff.' >> "$GITHUB_ENV"
-          fi
-
-      - uses: anthropics/claude-code-action@v1
+      - uses: cbeaulieu-gt/github-actions/pr-review@v1
         with:
           claude_code_oauth_token: ${{ secrets.claude_code_oauth_token || secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ github.token }}
-          use_sticky_comment: true
-          track_progress: true
-          claude_args: --max-turns "${{ inputs.max_turns || '15' }}" --model "${{ inputs.model || 'claude-sonnet-4-5' }}" --allowedTools "Bash(gh pr diff:*),Bash(gh pr review:*),Bash(gh pr view:*)"
-          prompt: |
-            Review the pull request in repository ${{ github.repository }} (#${{ github.event.pull_request.number }}).
-
-            ${{ env.DIFF_INSTRUCTION }}
-
-            Evaluate the changes across these dimensions:
-
-            1. **Code quality** — clarity, naming, structure, duplication, and adherence to the language's idiomatic style
-            2. **Security** — injection risks, secrets in code, insecure dependencies, unsafe deserialization, improper auth checks
-            3. **Performance** — unnecessary allocations, N+1 queries, blocking calls, inefficient algorithms
-            4. **Test coverage** — are new code paths tested? are edge cases and error paths covered?
-            5. **Documentation** — are public APIs, functions, and non-obvious logic commented or documented?
-
-            Post a summary comment on the PR. Where a specific line is problematic, post an inline review comment on that line using `gh pr review`. Be constructive and specific — cite the line and explain the concern and a suggested fix.
+          model: ${{ inputs.model || 'claude-sonnet-4-5' }}
+          max_turns: ${{ inputs.max_turns || '15' }}
