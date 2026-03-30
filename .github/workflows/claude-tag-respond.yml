@@ -21,6 +21,16 @@ on:
         type: string
         required: false
         default: ''
+      model:
+        description: 'Claude model to use'
+        type: string
+        required: false
+        default: 'claude-sonnet-4-5'
+      max_turns:
+        description: 'Maximum number of Claude turns'
+        type: string
+        required: false
+        default: '10'
 
 # NOTE: The consuming repo's workflow must declare the event triggers
 # (issue_comment, pull_request_review_comment, etc.) — this reusable
@@ -49,3 +59,5 @@ jobs:
           trigger_phrase: ${{ inputs.trigger_phrase }}
           require_association: ${{ inputs.require_association }}
           authorized_users: ${{ inputs.authorized_users }}
+          model: ${{ inputs.model }}
+          max_turns: ${{ inputs.max_turns }}
