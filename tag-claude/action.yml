@@ -25,6 +25,14 @@ inputs:
     description: 'Comma-separated list of GitHub usernames authorized to trigger Claude. When set, overrides require_association.'
     required: false
     default: ''
+  model:
+    description: 'Claude model to use'
+    required: false
+    default: 'claude-sonnet-4-5'
+  max_turns:
+    description: 'Maximum number of Claude turns'
+    required: false
+    default: '10'
 
 runs:
   using: composite
@@ -45,3 +53,4 @@ runs:
         claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
         github_token: ${{ github.token }}
         trigger_phrase: ${{ inputs.trigger_phrase }}
+        claude_args: --max-turns ${{ inputs.max_turns }} --model ${{ inputs.model }}

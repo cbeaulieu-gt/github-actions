@@ -34,7 +34,7 @@ permissions:
 jobs:
   diagnose:
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'failure'
+    if: github.event_name == 'workflow_call' || github.event.workflow_run.conclusion == 'failure'
 
     steps:
       - name: Checkout code
@@ -63,10 +63,11 @@ jobs:
           echo "log_url=$LOG_URL" >> "$GITHUB_OUTPUT"
 
           # --log-failed returns plain text for failed steps only; head -c 16000 keeps the
-          # prompt within a safe size. Falls back to a sentinel if the download fails.
-          gh run view ${{ github.event.workflow_run.id }} --log-failed 2>/dev/null \
-            | head -c 16000 > /tmp/ci_logs.txt \
-            || echo "Log download failed" > /tmp/ci_logs.txt
+          # prompt within a safe size. Fails loudly with an error annotation if the download fails.
+          if ! gh run view "${{ github.event.workflow_run.id }}" --log-failed 2>/tmp/log_err.txt | head -c 16000 > /tmp/ci_logs.txt; then
+            echo "::error::Failed to download CI logs: $(cat /tmp/log_err.txt)"
+            exit 1
+          fi
         env:
           GH_TOKEN: ${{ secrets.gh_pat || secrets.GH_PAT }}
 
