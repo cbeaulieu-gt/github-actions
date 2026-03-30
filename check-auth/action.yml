@@ -1,0 +1,61 @@
+name: 'Check Authorization'
+description: 'Checks whether the comment author is authorized to trigger Claude based on allowlist or author_association'
+
+inputs:
+  require_association:
+    description: 'Only allow OWNER, MEMBER, and COLLABORATOR when no allowlist is set'
+    required: false
+    default: 'true'
+  authorized_users:
+    description: 'Comma-separated list of GitHub usernames authorized to trigger Claude. When set, overrides require_association.'
+    required: false
+    default: ''
+
+outputs:
+  authorized:
+    description: "'true' if the comment author is authorized, 'false' otherwise"
+    value: ${{ steps.check.outputs.authorized }}
+
+runs:
+  using: composite
+  steps:
+    - name: Evaluate authorization
+      id: check
+      shell: bash
+      run: |
+        ACTOR="${{ github.event.comment.user.login }}"
+        ASSOCIATION="${{ github.event.comment.author_association }}"
+        AUTHORIZED_USERS="${{ inputs.authorized_users }}"
+        REQUIRE_ASSOCIATION="${{ inputs.require_association }}"
+
+        # If an explicit allowlist is provided, check it first (case-insensitive).
+        # The allowlist takes full precedence over the association check.
+        if [ -n "$AUTHORIZED_USERS" ]; then
+          ACTOR_LOWER=$(echo "$ACTOR" | tr '[:upper:]' '[:lower:]')
+          USERS_LOWER=$(echo "$AUTHORIZED_USERS" | tr '[:upper:]' '[:lower:]')
+          if echo ",$USERS_LOWER," | grep -q ",$ACTOR_LOWER,"; then
+            echo "Authorized via allowlist: $ACTOR"
+            echo "authorized=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Not authorized: $ACTOR is not in the authorized_users list. Skipping."
+            echo "authorized=false" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+        fi
+
+        # No allowlist — fall back to author_association check.
+        if [ "$REQUIRE_ASSOCIATION" = "true" ]; then
+          case "$ASSOCIATION" in
+            OWNER|MEMBER|COLLABORATOR)
+              echo "Authorized via association: $ACTOR ($ASSOCIATION)"
+              echo "authorized=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Not authorized: $ACTOR has association '$ASSOCIATION'. Skipping."
+              echo "authorized=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+        else
+          echo "Association check disabled — all commenters authorized."
+          echo "authorized=true" >> "$GITHUB_OUTPUT"
+        fi
