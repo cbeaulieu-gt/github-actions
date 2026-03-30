@@ -1,6 +1,14 @@
 name: 'Tag Claude'
 description: 'Responds to @claude mentions in issues and pull request comments'
 
+# NOTE: Composite actions cannot declare a concurrency block. If you want
+# per-user concurrency (cancel-in-progress when the same user triggers a
+# second run), add the following to the job that calls this action:
+#
+#   concurrency:
+#     group: claude-tag-${{ github.repository }}-${{ github.event.comment.user.login }}
+#     cancel-in-progress: true
+
 inputs:
   claude_code_oauth_token:
     description: 'Claude Code OAuth token'
@@ -9,13 +17,30 @@ inputs:
     description: 'Phrase that triggers Claude'
     required: false
     default: '@claude'
+  require_association:
+    description: 'Only allow OWNER, MEMBER, and COLLABORATOR to trigger Claude'
+    required: false
+    default: 'true'
+  authorized_users:
+    description: 'Comma-separated list of GitHub usernames authorized to trigger Claude. When set, overrides require_association.'
+    required: false
+    default: ''
 
 runs:
   using: composite
   steps:
+    - name: Check authorization
+      id: authz
+      uses: ./check-auth
+      with:
+        require_association: ${{ inputs.require_association }}
+        authorized_users: ${{ inputs.authorized_users }}
+
     - uses: actions/checkout@v4
+      if: steps.authz.outputs.authorized == 'true'
 
     - uses: anthropics/claude-code-action@v1
+      if: steps.authz.outputs.authorized == 'true'
       with:
         claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
         github_token: ${{ github.token }}

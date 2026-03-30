@@ -11,6 +11,16 @@ on:
         type: string
         required: false
         default: '@claude'
+      require_association:
+        description: 'Only allow OWNER, MEMBER, and COLLABORATOR to trigger Claude'
+        type: boolean
+        required: false
+        default: true
+      authorized_users:
+        description: 'Comma-separated list of GitHub usernames authorized to trigger Claude. When set, overrides require_association.'
+        type: string
+        required: false
+        default: ''
 
 # NOTE: The consuming repo's workflow must declare the event triggers
 # (issue_comment, pull_request_review_comment, etc.) — this reusable
@@ -19,6 +29,13 @@ on:
 jobs:
   respond:
     runs-on: ubuntu-latest
+    # Per-user concurrency: if a second comment arrives from the same user
+    # while a run is in progress, the in-progress run is cancelled and the
+    # new one takes over. This prevents queued pile-ups from rapid @claude
+    # mentions.
+    concurrency:
+      group: claude-tag-${{ github.repository }}-${{ github.event.comment.user.login }}
+      cancel-in-progress: true
     permissions:
       contents: write
       issues: write
@@ -26,8 +43,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: anthropics/claude-code-action@v1
+      - uses: ./tag-claude
         with:
           claude_code_oauth_token: ${{ secrets.claude_code_oauth_token }}
-          github_token: ${{ github.token }}
           trigger_phrase: ${{ inputs.trigger_phrase }}
+          require_association: ${{ inputs.require_association }}
+          authorized_users: ${{ inputs.authorized_users }}
