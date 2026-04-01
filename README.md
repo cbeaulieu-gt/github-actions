@@ -216,11 +216,13 @@ jobs:
     needs: [lint]
     if: failure()
     uses: cbeaulieu-gt/github-actions/.github/workflows/claude-lint-fix.yml@v1
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+      run_id: ${{ github.run_id }}
+      # auto_apply: true   # opt-in to auto-fix
     secrets:
       claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       gh_pat: ${{ secrets.GH_PAT }}
-    # with:
-    #   auto_apply: true   # opt-in to auto-fix
 ```
 
 ### Required secrets
@@ -232,11 +234,13 @@ jobs:
 
 ### Inputs
 
-| Input | Type | Default | Description |
-|---|---|---|---|
-| `model` | string | `claude-sonnet-4-5` | Claude model to use |
-| `max_turns` | string | `10` | Maximum Claude turns per run |
-| `auto_apply` | boolean | `false` | When `true`, Claude applies a high-confidence fix automatically |
+| Input | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `pr_number` | string | yes | — | Pull request number — pass `${{ github.event.pull_request.number }}` |
+| `run_id` | string | yes | — | Caller's workflow run ID — pass `${{ github.run_id }}` |
+| `model` | string | no | `claude-sonnet-4-5` | Claude model to use |
+| `max_turns` | string | no | `10` | Maximum Claude turns per run |
+| `auto_apply` | boolean | no | `false` | When `true`, Claude applies a high-confidence fix automatically |
 
 ---
 

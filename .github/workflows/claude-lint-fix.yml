@@ -8,6 +8,14 @@ on:
       gh_pat:
         required: true
     inputs:
+      pr_number:
+        description: 'Pull request number — pass ${{ github.event.pull_request.number }} from the caller'
+        type: string
+        required: true
+      run_id:
+        description: 'Workflow run ID for log fetch — pass ${{ github.run_id }} from the caller'
+        type: string
+        required: true
       model:
         description: 'Claude model to use'
         type: string
@@ -27,6 +35,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: read
 
 jobs:
   lint-fix:
@@ -36,8 +45,8 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.claude_code_oauth_token }}
           gh_pat: ${{ secrets.gh_pat }}
-          pr_number: ${{ github.event.pull_request.number }}
-          run_id: ${{ github.run_id }}
+          pr_number: ${{ inputs.pr_number }}
+          run_id: ${{ inputs.run_id }}
           auto_apply: ${{ inputs.auto_apply }}
-          model: ${{ inputs.model || 'claude-sonnet-4-5' }}
-          max_turns: ${{ inputs.max_turns || '10' }}
+          model: ${{ inputs.model }}
+          max_turns: ${{ inputs.max_turns }}

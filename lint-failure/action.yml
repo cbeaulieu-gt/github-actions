@@ -72,9 +72,10 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.gh_pat }}
       run: |
+        # Limit to first 30 files to avoid truncating mid-JSON (head -c on JSON is unsafe)
         gh api repos/${{ github.repository }}/pulls/${{ inputs.pr_number }}/files \
-          --jq '[.[] | {filename: .filename, patch: .patch}]' \
-          | head -c 8000 > /tmp/pr_diff.json
+          --jq '[.[] | {filename: .filename, patch: .patch}] | .[0:30]' \
+          > /tmp/pr_diff.json
 
     - name: Diagnose lint failure and optionally apply fix
       uses: anthropics/claude-code-action@v1
