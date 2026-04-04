@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     concurrency:
       group: claude-lint-fix-${{ github.repository }}-${{ inputs.pr_number }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     steps:
       - uses: cbeaulieu-gt/github-actions/lint-failure@v1
         with:
