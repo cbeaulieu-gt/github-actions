@@ -25,16 +25,18 @@ runs:
       if: github.event.action == 'synchronize'
       id: resolve-diff-base
       shell: bash
-      # shellcheck disable=SC2016
       env:
         GH_TOKEN: ${{ github.token }}
+        GH_REPOSITORY: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        DIFF_FALLBACK_SHA: ${{ github.event.before }}
       run: |
         # Walk PR commits newest-first (excluding HEAD, which hasn't been reviewed yet)
         # and find the most recent commit carrying a claude-pr-review:success status.
         # Export DIFF_BASE_SHA for use by the "Set diff scope" step.
-        REPO="${{ github.repository }}"
-        PR_NUMBER="${{ github.event.pull_request.number }}"
-        FALLBACK="${{ github.event.before }}"
+        REPO="$GH_REPOSITORY"
+        PR_NUMBER="$PR_NUMBER"
+        FALLBACK="$DIFF_FALLBACK_SHA"
 
         # Fetch the list of PR commit SHAs, oldest-first (GitHub API default), then reverse.
         COMMITS=$(gh api "repos/$REPO/pulls/$PR_NUMBER/commits" \
