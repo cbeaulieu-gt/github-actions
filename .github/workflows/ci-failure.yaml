@@ -74,7 +74,8 @@ jobs:
           # reading 16KB, it sends SIGPIPE to gh run view (exit 141). With pipefail that would
           # fail the pipeline even though 16KB of logs were captured successfully.
           gh run view "${{ github.event.workflow_run.id }}" --log-failed > /tmp/ci_full_logs.txt 2>/tmp/log_err.txt
-          if [ $? -ne 0 ] && [ -s /tmp/log_err.txt ]; then
+          exit_code=$?
+          if [ $exit_code -ne 0 ] && [ -s /tmp/log_err.txt ]; then
             echo "::error::Failed to download CI logs: $(cat /tmp/log_err.txt)"
             exit 1
           fi

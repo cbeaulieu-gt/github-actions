@@ -63,7 +63,8 @@ runs:
         LOG_URL="https://github.com/${{ github.repository }}/actions/runs/${{ inputs.run_id }}"
         echo "log_url=$LOG_URL" >> "$GITHUB_OUTPUT"
         gh run view "${{ inputs.run_id }}" --log-failed > /tmp/full_logs.txt 2>/tmp/log_err.txt
-        if [ $? -ne 0 ] && [ -s /tmp/log_err.txt ]; then
+        exit_code=$?
+        if [ $exit_code -ne 0 ] && [ -s /tmp/log_err.txt ]; then
           echo "::error::Failed to download lint logs: $(cat /tmp/log_err.txt)"
           exit 1
         fi
