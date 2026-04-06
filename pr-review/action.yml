@@ -85,8 +85,8 @@ runs:
       run: |
         if [ "$EVENT_ACTION" = "synchronize" ] && [ -n "$DIFF_BASE_SHA" ]; then
           # DIFF_BASE_SHA is set by the "Resolve diff base" step above.
-          # We interpolate it here via shell variable expansion (not ${{ }}) so
-          # the value the Claude prompt sees is the checkpoint SHA, not the expression.
+          # We interpolate it here via shell variable expansion (not expression syntax) so
+          # the value the Claude prompt sees is the checkpoint SHA, not the literal expression.
           printf 'DIFF_INSTRUCTION=This is a synchronize event (new commits were pushed to the PR). Start by running `git diff %s %s` to see only the changes in this push.\n\nAfter inspecting the diff, use your judgment: if the changes touch foundational or widely-shared code — such as base classes, abstract classes, interfaces, shared utilities, type definitions, schemas, authentication/authorization logic, or configuration files that many other files depend on — then also run `gh pr diff %s` to get the full PR context before completing your review.\n\nIf the changes are isolated (self-contained features, local logic, tests, docs), review only the incremental changes and do not re-review files already covered in previous commits.\n' \
             "$DIFF_BASE_SHA" "$AFTER_SHA" "$PR_NUMBER" >> "$GITHUB_ENV"
         else
@@ -98,13 +98,15 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
+        CALLER_MAX_INPUT: ${{ inputs.max_turns }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
-        CALLER_MAX="${{ inputs.max_turns }}"
+        CALLER_MAX="$CALLER_MAX_INPUT"
         # Default to 0 if empty or non-numeric (defense-in-depth; action default is '30')
         if ! [[ "$CALLER_MAX" =~ ^[0-9]+$ ]]; then
           CALLER_MAX=0
         fi
-        FILES=$(gh pr view "${{ github.event.pull_request.number }}" --json files --jq '.files | length' 2>/dev/null || echo "0")
+        FILES=$(gh pr view "$PR_NUMBER" --json files --jq '.files | length' 2>/dev/null || echo "0")
         if ! [[ "$FILES" =~ ^[0-9]+$ ]]; then
           FILES=0
         fi
@@ -130,13 +132,14 @@ runs:
     - name: Check author association
       id: authz
       shell: bash
-      # shellcheck disable=SC2016
       env:
         GH_TOKEN: ${{ github.token }}
+        AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+        PR_ACTOR: ${{ github.event.pull_request.user.login }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
-        ASSOCIATION="${{ github.event.pull_request.author_association }}"
-        ACTOR="${{ github.event.pull_request.user.login }}"
-        PR_NUMBER="${{ github.event.pull_request.number }}"
+        ASSOCIATION="$AUTHOR_ASSOCIATION"
+        ACTOR="$PR_ACTOR"
         if [ "$ASSOCIATION" = "OWNER" ] || [ "$ASSOCIATION" = "MEMBER" ] || [ "$ASSOCIATION" = "COLLABORATOR" ]; then
           echo "Authorized: $ACTOR ($ASSOCIATION)"
         else
@@ -148,11 +151,10 @@ runs:
       id: size-check
       if: steps.authz.outputs.skip != 'true'
       shell: bash
-      # shellcheck disable=SC2016
       env:
         GH_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
-        PR_NUMBER="${{ github.event.pull_request.number }}"
         FILES=$(gh pr view "$PR_NUMBER" --json files --jq '.files | length' 2>/dev/null || echo "0")
         ADDITIONS=$(gh pr view "$PR_NUMBER" --json additions --jq '.additions' 2>/dev/null || echo "0")
         DELETIONS=$(gh pr view "$PR_NUMBER" --json deletions --jq '.deletions' 2>/dev/null || echo "0")
@@ -195,17 +197,18 @@ runs:
     - name: Record review checkpoint
       if: github.event.action == 'synchronize' && steps.claude-review.outcome == 'success'
       shell: bash
-      # shellcheck disable=SC2016
       env:
         GH_TOKEN: ${{ github.token }}
+        GH_REPOSITORY: ${{ github.repository }}
+        AFTER_SHA: ${{ github.event.after }}
       run: |
         # Post a commit status to the HEAD of this push so the next synchronize run
         # can find the last successfully reviewed SHA and use it as its diff base.
-        gh api "repos/${{ github.repository }}/statuses/${{ github.event.after }}" \
+        gh api "repos/$GH_REPOSITORY/statuses/$AFTER_SHA" \
           -f state=success \
           -f context=claude-pr-review \
           -f description="Review complete"
-        echo "Checkpoint recorded: ${{ github.event.after }}"
+        echo "Checkpoint recorded: $AFTER_SHA"
 
     - name: Post incomplete-review warning
       if: failure() && steps.authz.outputs.skip != 'true' && steps.size-check.outputs.skip != 'true'
