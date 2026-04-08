@@ -26,10 +26,10 @@ inputs:
     required: false
     default: ''
   app_id:
-    description: 'GitHub App ID for generating a short-lived token'
+    description: 'GitHub App ID for generating a short-lived token (required — no github.token fallback)'
     required: false
   app_private_key:
-    description: 'GitHub App private key for generating a short-lived token'
+    description: 'GitHub App private key for generating a short-lived token (required — no github.token fallback)'
     required: false
   model:
     description: 'Claude model to use'
@@ -68,7 +68,7 @@ runs:
           echo "::debug::Using GitHub App token"
           echo "value=${{ steps.app-token.outputs.token }}" >> "$GITHUB_OUTPUT"
         else
-          echo "::error::No authentication token provided. Set app_id + app_private_key inputs."
+          echo "::error::No authentication token provided. Set app_id + app_private_key inputs. See README for GitHub App setup instructions."
           exit 1
         fi
 

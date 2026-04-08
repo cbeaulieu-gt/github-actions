@@ -106,8 +106,8 @@ Optional inputs:
 | Secret | Purpose |
 |---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | Authenticates `claude-code-action` |
-| `APP_ID` | GitHub App ID — used to generate a short-lived token for git push and API calls |
-| `APP_PRIVATE_KEY` | GitHub App private key |
+| `APP_ID` | (**Required**) GitHub App ID — used to generate a short-lived token for git push and API calls |
+| `APP_PRIVATE_KEY` | (**Required**) GitHub App private key (PEM format) |
 
 ### Security
 
