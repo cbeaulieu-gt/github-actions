@@ -148,10 +148,10 @@ If you need more control (e.g., embed the review step inside a larger job), use 
 
 | Ref | Meaning |
 |---|---|
-| `@v2` | Stable floating tag — points to the latest `v1.x.x` release. Use this in production. |
+| `@v2` | Stable floating tag — points to the latest `v2.x.x` release. Use this in production. |
 | `@main` | Latest development commit. May include breaking changes. |
 
-When a new major version is released, a new `@v2` tag will be created. The `@v2` tag will continue to point to the last `v1.x.x` release for backwards compatibility.
+When a new major version is released (e.g., v3), a new floating tag will be created. The `@v2` tag will continue to point to the last `v2.x.x` release for backwards compatibility.
 
 ---
 
@@ -165,7 +165,7 @@ The `ci-failure` workflow watches for failed runs of a workflow named `CI` and a
 2. A bash step resolves the PR number from the failing commit SHA.
 3. `gh run view --log-failed` fetches plain-text logs for failed steps only (up to 16 000 chars) into `/tmp/ci_logs.txt`.
 4. The PR diff is fetched from the GitHub API into `/tmp/pr_diff.json`.
-5. `anthropics/claude-code-action@v2` runs Claude, which reads both files, posts a structured diagnosis comment on the PR, and — when `auto_apply` is `true` and confidence is `high` — applies the fix, commits it, and pushes to the PR branch in the same turn.
+5. `anthropics/claude-code-action@v1` runs Claude, which reads both files, posts a structured diagnosis comment on the PR, and — when `auto_apply` is `true` and confidence is `high` — applies the fix, commits it, and pushes to the PR branch in the same turn.
 
 ### Required secrets
 
@@ -236,7 +236,7 @@ The `claude-lint-fix` workflow lets consumers drop a single `notify-claude` job 
 1. The consumer's `notify-claude` job depends on their `lint` job (`needs: [lint]`) and runs only on failure (`if: failure()`).
 2. `gh run view --log-failed` fetches plain-text logs for failed lint steps only (up to 16 000 chars) into `/tmp/lint_logs.txt`.
 3. The PR diff is fetched from the GitHub API into `/tmp/pr_diff.json`.
-4. `anthropics/claude-code-action@v2` runs Claude, which reads both files, posts a structured diagnosis comment on the PR, and — when `auto_apply` is `true` and confidence is `high` — applies the fix, commits it, and pushes to the PR branch in the same turn.
+4. `anthropics/claude-code-action@v1` runs Claude, which reads both files, posts a structured diagnosis comment on the PR, and — when `auto_apply` is `true` and confidence is `high` — applies the fix, commits it, and pushes to the PR branch in the same turn.
 
 ### Consumer usage
 
