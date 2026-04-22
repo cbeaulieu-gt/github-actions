@@ -35,7 +35,7 @@ The personal config library lives in a private repo (`cbeaulieu-gt/claude_person
 - **Startup latency optimization.** Pulled images are typically < 2 GB; cold pull cost is acceptable.
 - **Self-hosted runners.** Public GHA runners only, for sandboxing.
 - **External-consumer compatibility matrix.** Deferred until at least one external consumer exists.
-- **Operational cost, storage, rate limiting.** GHCR storage (5 images × tags × ~1–2 GB each), Claude API usage, and rate-limit handling are monitored post-launch rather than specified here.
+- **Operational cost, storage, rate limiting.** GHCR storage (4 images × tags × ~1–2 GB each), Claude API usage, and rate-limit handling are monitored post-launch rather than specified here.
 
 ### Priority ordering
 
@@ -440,7 +440,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
 
-The container reference is pinned by digest (Option B). Every successful build opens a PR bumping these digests across the five reusable workflows, then a workflow release cut from that PR ships the new image to consumers. Consumers pinned to `@v2.x.y` get exactly the image digest that was in the repo at tag time — no silent drift.
+The container reference is pinned by digest (Option B). Every successful build opens a PR bumping these digests across every reusable workflow that pins a container image, then a workflow release cut from that PR ships the new image to consumers. Consumers pinned to `@v2.x.y` get exactly the image digest that was in the repo at tag time — no silent drift.
 
 ### 7.3 Image ENV (hidden from consumer)
 
@@ -490,7 +490,7 @@ The current `tag-claude/` action is a catch-all generalist. For the runtime-imag
   outputs:
     overlay: <review | fix | explain>
     status: <ok | unknown_verb | malformed | unauthorized>
-    mode: <apply | read-only>  # default "apply"; "read-only" iff --read-only follows the verb; ignored for overlays other than "fix"
+    mode: <apply | read-only>  # default "apply"; "read-only" when "--read-only" appears as a whitespace-delimited token anywhere after the resolved verb within the same @claude mention; otherwise "apply". Only meaningful for overlay=fix.
   ```
   (`mode` lives in the router so dispatch decisions don't require the downstream workflow to re-parse the comment.)
 - Delegates authorization to the existing `check-auth/` action before dispatching
@@ -510,12 +510,13 @@ The router applies the following rules to the triggering comment body:
 2. If no `@claude` mention is found, `status=malformed`.
 3. After `@claude`, tokenize the remaining text on whitespace delimiters.
 4. Scan tokens left-to-right. For each token, lowercase it and test against the known-verb allowlist.
-5. Filler/connecting words (`please`, `can`, `you`, `go`, `help`, `and`, `also`, `me`, `a`, `the`, etc.) are silently skipped — the scan continues.
+5. Any token that is not in the verb allowlist is skipped — this includes explicit filler words (`please`, `can`, `you`, `go`, `help`, `and`, `also`, `me`, `a`, `the`, etc.), domain words (`the`, `linter`, `ci`), and any other non-verb token. The scan continues until a verb is matched or all tokens are exhausted. A comment with `@claude` and no subsequent verb token emits `status=unknown_verb`.
 
-   The authoritative filler-word list lives in `claude-command-router/lib/filler_words.txt` (one word per line, lowercased). The router loads this file at startup; bats tests in §10.3 validate that the known-verb scan respects the current list. When adding new filler words, update both the text file and at least one bats assertion demonstrating the new word is skipped.
+   The `filler_words.txt` file documents frequently-seen skipped tokens for implementer reference and test coverage, but is not a gate — the algorithm skips all non-verb tokens regardless of whether they appear in this file. The authoritative filler-word list lives in `claude-command-router/lib/filler_words.txt` (one word per line, lowercased). The router loads this file at startup; bats tests in §10.3 validate that the known-verb scan respects the current list. When adding new filler words, update both the text file and at least one bats assertion demonstrating the new word is skipped.
 6. The **first token that matches a known verb** becomes the resolved verb; `status=ok`, `overlay=<verb>`.
 7. If the scan exhausts all tokens after `@claude` without matching a known verb, `status=unknown_verb` and the router posts a supported-verbs rejection.
 8. **First-verb-wins:** scanning stops at the first known-verb match. Subsequent verb tokens (including from a second `@claude` mention) are ignored.
+9. **`--read-only` flag scan:** Once the verb is resolved, continue scanning remaining tokens in the same `@claude` mention. If `--read-only` appears as a whitespace-delimited token, emit `mode=read-only`. Otherwise emit `mode=apply`. Scan terminates at the next `@claude` mention or end of comment. Filler words and domain words between the verb and the flag are permitted. The flag is silently ignored for overlays other than `fix`.
 
 **Parsing properties:**
 
@@ -530,6 +531,12 @@ The router applies the following rules to the triggering comment body:
 | `@claude please review this` | `review` | `ok` | `apply` |
 | `@claude can you fix the lint` | `fix` | `ok` | `apply` |
 | `@claude fix --read-only` | `fix` | `ok` | `read-only` (no commits) |
+| `@claude fix the linter --read-only` | `fix` | `ok` | `read-only` (filler/domain words between verb and flag are permitted) |
+| `@claude fix --read-only the stale tests` | `fix` | `ok` | `read-only` (flag may appear before trailing tokens) |
+| `@claude please fix --read-only` | `fix` | `ok` | `read-only` (filler before verb; flag after verb) |
+| `@claude review --read-only` | `review` | `ok` | `apply` (`--read-only` is ignored for overlays other than `fix`; `mode` defaults to `apply`) |
+| `@claude check this PR` | — | `unknown_verb` | `apply` (`check` is not a verb; scan exhausts; no match) |
+| `@claude triage and fix the lint` | `fix` | `ok` | `apply` (`triage` is not a verb; skipped; `fix` wins) |
 | `@claude review` | `review` | `ok` | `apply` (`mode` always emitted, default `apply`) |
 | `@claude thanks!` | — | `unknown_verb` | — (no known verb found) |
 | `@claude review and also fix` | `review` | `ok` | `apply` (first-verb-wins; `fix` ignored) |
@@ -551,6 +558,7 @@ jobs:
     outputs:
       overlay: ${{ steps.r.outputs.overlay }}
       status:  ${{ steps.r.outputs.status }}
+      mode:    ${{ steps.r.outputs.mode }}
     steps:
       - uses: actions/checkout@v4
       - id: r
@@ -676,6 +684,8 @@ Negative assertions mechanically enforce the "different set of eyes" design prin
 
 `runtime/overlays/*/expected.yaml` MUST be listed in `.github/CODEOWNERS` with a reviewer *different from the reviewer assigned to the overlay manifest itself*. Edits to an overlay and edits to its `expected.yaml` in the same PR require two distinct reviewers. Without this separation, the "different eyes" guarantee is not enforced by CI — it reduces to the same author writing both sides of the assertion. This must be enforced via branch protection or rulesets requiring CODEOWNERS review on protected paths.
 
+Additionally, edits that touch **both** `runtime/shared/**` (source files that could shadow private imports) **and** `runtime/ci-manifest.yaml`'s `merge_policy.overrides` list in the same PR MUST require a second approver via CODEOWNERS. This closes the symmetric loophole where a single author could stage a new shadowing file and whitelist it in one commit. The manifest MAY be edited by a single owner when the edit does not touch `merge_policy.overrides`.
+
 Example CODEOWNERS configuration:
 
 ```
@@ -684,6 +694,10 @@ runtime/overlays/*/                @overlay-lead
 
 # Inventory assertions — reviewed by a separate party
 runtime/overlays/*/expected.yaml   @inventory-reviewer
+
+# CI manifest (merge_policy.overrides edits require a second approver)
+runtime/ci-manifest.yaml           @manifest-reviewer
+runtime/shared/**                  @shared-reviewer
 ```
 
 #### Marketplace bump review containment
@@ -699,6 +713,10 @@ Rationale: agent renames, hook schema changes, and plugin file moves can slip th
 - `review` → overlay=review, status=ok
 - `fix` → overlay=fix, status=ok, mode=apply
 - `fix --read-only` → overlay=fix, status=ok, mode=read-only
+- `fix the linter --read-only` → overlay=fix, status=ok, mode=read-only (proves filler/domain word between verb and flag does not break flag detection)
+- `please fix --read-only` → overlay=fix, status=ok, mode=read-only (proves filler before verb + flag after verb)
+- `review --read-only` → overlay=review, status=ok, mode=apply (proves `--read-only` is ignored for non-fix overlays; mode defaults to apply)
+- `triage and fix the lint` → overlay=fix, status=ok, mode=apply (proves skip-and-continue on unknown domain word; `fix` wins)
 - `cook me a pizza` → status=unknown_verb
 - `@claude` (bare) → status=malformed
 - `review and fix` → overlay=review (first-verb-wins)
@@ -760,7 +778,7 @@ The 14-day threshold is a starting point — short enough to catch meaningful dr
 | `:<pubsha>` | Immutable, per-build, serves as rollback target | Never pruned |
 | `:pending-<pubsha>` | Pre-promotion staging | 30-day retention |
 
-There is no floating `:v1` tag. A mutable floating tag would create split-brain during multi-image promotion (five `crane tag` operations are not atomic) and would shadow the digest pin in reusable workflow files (consumers pulling by tag would bypass the pinned digest). Promotion is exclusively via the digest-bump git commit; rollback is a git revert or a new digest-bump PR pinning a prior `:<pubsha>` set.
+There is no floating `:v1` tag. A mutable floating tag would create split-brain during multi-image promotion (four `crane tag` operations are not atomic) and would shadow the digest pin in reusable workflow files (consumers pulling by tag would bypass the pinned digest). Promotion is exclusively via the digest-bump git commit; rollback is a git revert or a new digest-bump PR pinning a prior `:<pubsha>` set.
 
 ## 12. Migration plan (high-level)
 
@@ -782,6 +800,10 @@ Drafted here to bound scope; detailed plan will be produced by `superpowers:writ
 4. **GHCR push from a forked PR.** Whether forked PRs need a different auth path. Not critical for v1 (builds are triggered from main or workflow_dispatch, not from forks).
 5. **Marketplace sha bump cadence.** When do we bump the pinned marketplace sha? Proposal: manually, on observed value. Document the decision.
 6. ~~**`claude-lint-failure.yml` overlay split.**~~ **Resolved.** `claude-lint-failure.yml` uses a single `fix` overlay for both the read-only diagnosis path and the auto-apply path. The `--read-only` flag controls whether commits are produced. The formerly separate `diagnose` overlay is eliminated.
+7. **Staleness alarm denominator.** The `check-private-freshness.yml` check (§11.3) currently compares calendar days between pinned-tag commit date and private `main` HEAD. This produces drift-fatigue when `main` sees heavy churn on paths not imported by CI, and silence when imported paths themselves diverge. Implementation should narrow the denominator to `git log` scoped to the paths in `imports_from_private.*`, and revisit the 14-day threshold once real drift data is available. Source: inquisitor pass 2.
+8. **GHCR immutability preflight retry/backoff.** The preflight (§6.3.1) is described as "verified on every build" but has no retry or backoff specified. Transient GitHub API 5xx / rate-limit responses would fail the build closed on a read that is not itself load-bearing. Implementation should add exponential backoff (e.g., 3 attempts) and document an emergency skip flag for incident use. Source: inquisitor pass 2.
+9. **Router `mode` output naming.** The third router output is currently named `mode` with a carve-out that it is "ignored for overlays other than `fix`". This conflates delivery-policy (commit-or-not) with a general verb dimension and may not scale when future verbs introduce orthogonal flags (`--draft`, etc.). Candidate rename: `commit_policy: <apply | read-only>` or a boolean `apply`. Implementation plan to evaluate whether to rename before shipping or defer until a second orthogonal flag appears. Source: inquisitor pass 2.
+10. **Non-root smoke UID pin.** STAGE 4 smoke tests must run as the consumer-runner UID (§10.1). The spec currently uses `<non-root-uid>` as a placeholder. GitHub-hosted Ubuntu runners today use UID 1001 (`runner`), but this is an implementation detail of the runner image, not a documented contract. Implementation should either (a) pin the UID explicitly with a preflight that asserts `id -u` matches inside a live runner step, or (b) dynamically capture the runner UID in a pipeline step and pass it into the smoke invocation. Source: inquisitor pass 2.
 
 ## 14. Appendix A — decisions made during brainstorming
 
