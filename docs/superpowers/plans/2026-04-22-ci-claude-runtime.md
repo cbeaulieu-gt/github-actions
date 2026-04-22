@@ -286,6 +286,7 @@ Replace the `tag-claude/` generalist with a verb-routing composite action that p
 ### Files
 
 - Create: `claude-command-router/action.yml`
+- Create: `claude-command-router/lib/parse.sh` — sourceable bash function implementing §8.1 verb-scan + --read-only logic (authored in task 4.4b)
 - Create: `claude-command-router/lib/filler_words.txt`
 - Create: `claude-command-router/tests/cases.json`
 - Create: `claude-command-router/tests/run-cases.sh`
