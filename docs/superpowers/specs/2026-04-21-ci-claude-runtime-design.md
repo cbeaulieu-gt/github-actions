@@ -111,18 +111,30 @@ The public repo (`cbeaulieu-gt/github-actions`) is authoritative for CI configur
 
 ### 4.2 Merge policy
 
-When a path appears in both public (local) and private (imported), **public wins** with a WARN log line in the build output. Collisions are not errors — they are an intentional override mechanism for cases where CI needs a different version of a shared artifact.
+**Default behavior — fail on collision:** When a path appears in both a `shared/` source and the `imports_from_private` import list, the build **FAILS** with a descriptive error. Silent shadowing of authoritative imported artifacts is not permitted.
 
-Log format (one line per collision):
+Example failure message:
 
 ```
-WARN merge_collision path=skills/git/SKILL.md
+ERROR merge_collision path=skills/git/SKILL.md
   source_public=runtime/shared/skills/git/SKILL.md (sha=abc123)
   source_private=claude_personal_configs/skills/git/SKILL.md (sha=def456, ref=ci-v1.2.3)
-  resolution=public_wins
+  resolution=error (path not in merge_policy.overrides)
+  action=BUILD HALTED — add path to merge_policy.overrides to permit this override explicitly
 ```
 
-Aggregate count is appended to the GHA job summary: `Merge collisions: 3 (all resolved public_wins)`.
+**Explicit override mechanism:** To intentionally allow a `shared/` path to shadow an imported private path, the path must be listed in `merge_policy.overrides`. This is a deliberate, reviewable line in the manifest — not a default behavior. An override entry is visible in code review and communicates that the deviation from the authoritative import is intentional.
+
+Example: if `skills/git/SKILL.md` is legitimately overridden for CI purposes:
+
+```yaml
+merge_policy:
+  on_conflict: error                        # default; explicit for clarity
+  overrides:
+    - skills/git/SKILL.md                  # permits public to shadow private for this path
+```
+
+Any path not listed in `overrides` that collides between `shared/` and `imports_from_private` halts the build. This guarantees that authoritative imported artifacts (`skills/git`, `agents/ops`, `CLAUDE.md`, `standards/software-standards.md`) cannot be silently replaced by a stale fork under `runtime/shared/`.
 
 ### 4.3 Version pinning
 
@@ -204,7 +216,8 @@ overlays:
       claude_md: runtime/overlays/diagnose/CLAUDE.md
 
 merge_policy:
-  on_conflict: public_wins                    # or "error"
+  on_conflict: error                          # default; "public_wins" removed — use overrides instead
+  overrides: []                              # explicit per-path allowlist where public may shadow an imported path
 ```
 
 ### 5.2 Schema (JSON Schema at `runtime/ci-manifest.schema.json`)
@@ -214,7 +227,8 @@ Asserted at build time (STAGE 1):
 - `sources.private.ref` matches `^ci-v\d+\.\d+\.\d+$`
 - `sources.marketplace.ref` matches `^[a-f0-9]{40}$`
 - `overlays` keys ⊆ `{review, fix, explain, diagnose}`
-- `merge_policy.on_conflict` ∈ `{public_wins, error}`
+- `merge_policy.on_conflict` ∈ `{error}` (only valid value; `public_wins` is removed)
+- `merge_policy.overrides` items: each path MUST exist in both a `shared/` source and the private import list; a path listed in `overrides` that does not appear in both sources is a schema error (stray overrides are caught eagerly, before any file materialization)
 - `*.imports_from_private.agents` items ⊆ known-agent enum (typo-catcher)
 
 ### 5.3 Plugin install mechanisms
@@ -240,9 +254,20 @@ STAGE 1: CLONE SOURCES (parallel)
   ├── git clone claude_personal_configs @ ci-v1.2.3  (via GH_PAT)
   └── git clone claude-plugins-official @ <sha>
   + manifest schema validation (ajv)
+      - validates merge_policy.on_conflict is "error"
+      - validates merge_policy.overrides: each listed path must exist in BOTH
+        a shared/ source and the private import list (stray overrides = schema error)
   + import-path existence check
+  + GHCR immutability preflight: verify that the GHCR package for each image
+    has tag immutability enabled via the GHCR API; fail the build if immutability
+    is not set (without this, the "immutable rollback reference" guarantee is void)
 
 STAGE 2: BUILD BASE (sequential)
+  [build workflow MUST declare concurrency:
+     group: runtime-build-${{ github.sha }}
+     cancel-in-progress: false
+   This prevents two builds for the same SHA racing to push :pending-<pubsha>
+   and creating conflicting digest references in the promote PR.]
   ├── extract-shared.sh  (materializes shared/ tree per manifest, applies merge_policy)
   ├── docker build runtime/base --build-context=... --label=...
   └── push ghcr.io/.../claude-runtime-base:pending-<pubsha>
@@ -262,10 +287,17 @@ STAGE 4: SMOKE TEST (parallel)
         (must_contain + must_not_contain)
 
 STAGE 5: PROMOTE
-  for each image that passed smoke:
-    ├── move :v1 tag to :pending-<pubsha>  (atomic)
-    ├── also push immutable :<pubsha> tag
-    └── open PR updating digest pin in .github/workflows/claude-*.yml
+  collect digests for all images that passed smoke (base + four overlays)
+  open a single PR against .github/workflows/claude-*.yml that updates ALL
+    five digest references atomically in one git commit
+  ├── one commit = one atomic promote across all five images
+  ├── no crane tag calls — there is no floating :v1 tag
+  └── merging this PR IS the promote
+
+There is no floating `:v1` tag. Consumers pull by immutable digest. Promotion
+is a git commit to reusable workflow files. A partial promote (some images
+promoted, others not) is structurally impossible: the digest-bump PR either
+merges all five references or none.
 ```
 
 Pending tags (`pending-<pubsha>`) are retained 30 days for post-mortem. Immutable `:<pubsha>` tags are never pruned and serve as rollback targets.
@@ -381,13 +413,36 @@ The router lives in a composite action (not inline in the calling workflow) beca
 
 The router applies the following rules to the triggering comment body:
 
-- **Pattern:** `/@claude\s+(\w+)/i` — matches `@claude`, one or more whitespace characters, then captures the next word characters (letters, digits, underscore).
-- **Case-insensitivity:** `@claude REVIEW`, `@claude Review`, and `@claude review` all match identically. The captured word is normalized to lowercase before verb-enum lookup.
-- **Delimiter requirement:** `@claude-review` does NOT match — the pattern requires at least one whitespace character between `@claude` and the verb.
-- **Whitespace tolerance:** `@claude   review` (multiple spaces, tabs) matches; the `\s+` quantifier is greedy.
-- **First-match-wins:** If the comment contains multiple recognized verbs (e.g. `@claude review and also @claude fix`), the first capture is used.
-- **Unknown verb:** If the captured word is not in `{review, fix, explain, diagnose}`, `status=unknown_verb` and the router posts a supported-verbs rejection.
-- **No match:** If no `@claude` mention is present or no word follows it, `status=malformed`.
+**Known-verb allowlist:** `review | fix | explain | diagnose` (aligned with overlay names).
+
+**Algorithm — verb scanning:**
+
+1. Locate the first `@claude` mention in the comment body (case-insensitive).
+2. If no `@claude` mention is found, `status=malformed`.
+3. After `@claude`, tokenize the remaining text on whitespace delimiters.
+4. Scan tokens left-to-right. For each token, lowercase it and test against the known-verb allowlist.
+5. Filler/connecting words (`please`, `can`, `you`, `go`, `help`, `and`, `also`, `me`, `a`, `the`, etc.) are silently skipped — the scan continues.
+6. The **first token that matches a known verb** becomes the resolved verb; `status=ok`, `overlay=<verb>`.
+7. If the scan exhausts all tokens after `@claude` without matching a known verb, `status=unknown_verb` and the router posts a supported-verbs rejection.
+8. **First-verb-wins:** scanning stops at the first known-verb match. Subsequent verb tokens (including from a second `@claude` mention) are ignored.
+
+**Parsing properties:**
+
+- **Case-insensitivity:** `@claude REVIEW`, `@claude Review`, and `@claude review` all resolve to `verb=review`. Token comparison is done after lowercasing.
+- **Delimiter requirement:** `@claude-review` does NOT match — the pattern requires at least one whitespace character between `@claude` and the token stream.
+- **Whitespace tolerance:** `@claude   review` (multiple spaces, tabs) matches; whitespace between tokens is collapsed.
+
+**Examples:**
+
+| Input | Result |
+|---|---|
+| `@claude please review this` | `verb=review`, `status=ok` |
+| `@claude can you fix the lint` | `verb=fix`, `status=ok` |
+| `@claude thanks!` | `status=unknown_verb` (no known verb found) |
+| `@claude review and also fix` | `verb=review`, `status=ok` (first-verb-wins; `fix` ignored) |
+| `@claude review and also @claude fix` | `verb=review`, `status=ok` (first known verb in first mention wins) |
+| `@claude` (bare) | `status=malformed` (no tokens after `@claude`) |
+| `@claude-review` | `status=malformed` (no whitespace delimiter) |
 
 The bats test file at `claude-command-router/tests/router.bats` is the executable specification for these rules.
 
@@ -443,7 +498,7 @@ jobs:
 | Manifest parse/schema error | STAGE 1 ajv | Hard fail with line/column. |
 | Missing imported file | STAGE 1 path-existence check | Hard fail listing every missing path. Never silently skip. |
 | Docker build error | Non-zero exit | Hard fail. Matrix default `continue-on-error: false` — one overlay failing blocks ALL promotion (never ship a partial set). |
-| Smoke or inventory test failure | STAGE 4 | Hard fail. `pending-<pubsha>` retained 30 days; `:v1` not moved. |
+| Smoke or inventory test failure | STAGE 4 | Hard fail. `pending-<pubsha>` retained 30 days; digest-bump PR is not opened. |
 | `GH_PAT` expired/revoked | STAGE 1 401/403 | Hard fail with distinct annotation: `GH_PAT authentication failed — rotate secret`. |
 
 ### 9.2 Post-promotion (blast radius = all consumers)
@@ -459,25 +514,37 @@ jobs:
 
 ### 9.3 Rollback
 
-`runtime/rollback.yml` (`workflow_dispatch`, inputs: `image`, `target_sha`):
+Rollback is a **single atomic git operation** across all five images.
+
+**Standard rollback — revert the digest-bump PR:**
 
 ```bash
-crane tag ghcr.io/cbeaulieu-gt/claude-runtime-<image>:<target_sha> v1
+git revert <digest-bump-merge-commit>
+# creates a new commit restoring all five prior @sha256:<digest> references
+git push origin main
 ```
 
-No rebuild. `:<target_sha>` is immutable and already pushed. Rollback is atomic per-image.
+One revert commit atomically restores all five image references to the prior set. No `crane tag`, no partial state, no split-brain window.
+
+**Targeted rollback to an arbitrary prior pubsha:**
+
+`runtime/rollback.yml` (`workflow_dispatch`, inputs: `target_pubsha`):
+
+Opens a PR that replaces all five `@sha256:<digest>` values with the digests recorded in the OCI labels of `:<target_pubsha>` images. Merging that PR is the rollback. `:<target_pubsha>` is immutable — it is already in GHCR and was never overwritten. No rebuild required.
+
+There is no `:v1` tag to move. Rollback scope is always all-five-images because promotion scope is always all-five-images.
 
 ### 9.4 Orphaned pending tag cleanup
 
 `runtime/prune-pending.yml` (`schedule: '0 2 * * *'`):
 
 - Lists all `pending-<sha>` tags older than 30 days
-- Deletes any not currently aliased by `:v1`
-- Never prunes `:<pubsha>` (rollback targets)
+- Deletes them (they served their staging purpose and are past the post-mortem window)
+- Never prunes `:<pubsha>` (immutable rollback targets)
 
 ### 9.5 Merge-policy collisions
 
-`WARN merge_collision` lines emitted during build (not failures — collisions are intentional). Aggregated count appears in the GHA job summary for visibility.
+`ERROR merge_collision` lines halt the build when a path appears in both a `shared/` source and the private import list and is not listed in `merge_policy.overrides`. There are no silent WARN-and-continue resolutions. The build either completes cleanly (no collisions, or all collisions are explicitly permitted via `overrides`) or it fails with a specific list of offending paths.
 
 ## 10. Testing strategy
 
@@ -559,10 +626,11 @@ Image digests in `.github/workflows/claude-*.yml` are pinned per release. A `v2.
 
 | Tag | Meaning | Lifecycle |
 |---|---|---|
-| `@sha256:<digest>` | Immutable content address | Referenced by workflow files |
+| `@sha256:<digest>` | Immutable content address | Referenced by workflow files; updated via digest-bump PR |
 | `:<pubsha>` | Immutable, per-build, serves as rollback target | Never pruned |
 | `:pending-<pubsha>` | Pre-promotion staging | 30-day retention |
-| `:v1` | Floating, always points to current production | Moved atomically on promote/rollback |
+
+There is no floating `:v1` tag. A mutable floating tag would create split-brain during multi-image promotion (five `crane tag` operations are not atomic) and would shadow the digest pin in reusable workflow files (consumers pulling by tag would bypass the pinned digest). Promotion is exclusively via the digest-bump git commit; rollback is a git revert or a new digest-bump PR pinning a prior `:<pubsha>` set.
 
 ## 12. Migration plan (high-level)
 
@@ -591,7 +659,7 @@ Drafted here to bound scope; detailed plan will be produced by `superpowers:writ
 |---|---|---|
 | Image architecture | Shared base + per-action overlays | Physical isolation of persona, shared foundation, manageable size |
 | Source of truth | Public authoritative, imports from private | Avoid duplication; public is where CI lives |
-| Merge policy | `public_wins` with WARN log | Intentional override mechanism, not a failure |
+| Merge policy | `error` by default; explicit `overrides` list for intentional path-level exceptions | Prevents silent shadowing of authoritative imported artifacts; overrides are reviewable in code review |
 | Private repo triggering | None — build is public-initiated only | User controls when new content enters CI |
 | Private ref default | None — required semver tag | Prevent WIP content from leaking into CI |
 | Private ref format | `ci-v<semver>` | Explicit "CI-ready" marker in the private repo |
@@ -602,7 +670,7 @@ Drafted here to bound scope; detailed plan will be produced by `superpowers:writ
 | Pending tag retention | 30 days | Enough for post-mortem, keeps registry tidy |
 | Router location | Composite action (`claude-command-router/`) | User preference: logic in actions, not workflows |
 | PAT secret name | `GH_PAT` | User's standard across all repos |
-| Container tag strategy | Digest pinning in workflow file (Option B) | Matches the reproducibility stance taken everywhere else in the design |
+| Container tag strategy | Digest pinning in workflow file (Option B); no floating `:v1` tag | Digest pin is the sole promotion mechanism; a mutable tag creates non-atomic multi-image state and shadows the pin |
 | Consumer surface | One `uses:` line, no container/env | Hide implementation details behind the reusable workflow seam |
 
 ## 15. Appendix B — plugin catalog (v1)
