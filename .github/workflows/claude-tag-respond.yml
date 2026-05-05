@@ -96,13 +96,13 @@ jobs:
           set -euo pipefail
           case "$OVERLAY" in
             review)
-              IMG="ghcr.io/glitchwerks/claude-runtime-review@sha256:776980ed9009fe17dfdb782960978bd573842dc867728bd4e63d734871cdeef1"
+              IMG="ghcr.io/glitchwerks/claude-runtime-review@sha256:e0bb9972fb1273bb6cd4fa4e2db06834eb65fe88563477a6933832647c2184ca"
               ;;
             fix)
-              IMG="ghcr.io/glitchwerks/claude-runtime-fix@sha256:da2b6e52ad20159252cb6f24147d4ece221182dbb0b21df9fb32966126e24a20"
+              IMG="ghcr.io/glitchwerks/claude-runtime-fix@sha256:3e8fd1b77b5e92c83f759059fc76c764f84f3d85ca14df3af4c27979febded24"
               ;;
             explain)
-              IMG="ghcr.io/glitchwerks/claude-runtime-explain@sha256:23dd59f2651ebc9aba93b5c143d5b78d256c8abe1ebf970ad9c218f6aa06ff77"
+              IMG="ghcr.io/glitchwerks/claude-runtime-explain@sha256:c3fb56ee7bd95177ad7658a953035c40071b797187f48e215d90e8a2f31f424c"
               ;;
             *)
               echo "::error::router emitted status=ok but overlay=$OVERLAY is not in the known set (review|fix|explain). Add the new overlay to the case statement in the 'image' step of the route job (.github/workflows/claude-tag-respond.yml)."
