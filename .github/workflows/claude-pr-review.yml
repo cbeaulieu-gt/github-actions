@@ -45,8 +45,8 @@ jobs:
     # invocation all run inside this container. The image bakes in Claude CLI
     # at $PATH_TO_CLAUDE_CODE_EXECUTABLE plus the review-specific agent set
     # (different-eyes guarantee per spec §3.1, §10.2).
-    # Digest source: runtime-build run 25398539323 (post-#195 rebuild, unzip+gh baked in).
-    container: ghcr.io/glitchwerks/claude-runtime-review@sha256:e0bb9972fb1273bb6cd4fa4e2db06834eb65fe88563477a6933832647c2184ca
+    # Digest source: STAGE 3 build run 25405636887 (post-#200 rebuild, 3bb6a22) — base image bakes safe.directory '*' (#199, #197).
+    container: ghcr.io/glitchwerks/claude-runtime-review@sha256:46d16c22e19dcd98bea17827334c28dd0d6f3a97e6c631816fe5741024081aeb
     concurrency:
       group: claude-pr-review-${{ github.repository }}-${{ github.event.pull_request.number }}
       cancel-in-progress: true
