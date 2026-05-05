@@ -57,8 +57,8 @@ jobs:
     # the fix overlay handles both read-only diagnosis (auto_apply: false)
     # and the auto-apply path (auto_apply: true) — the composite action's
     # behavior switches on the input, the image does not.
-    # Digest source: STAGE 3 build run 25261308990 (Phase 3 merge, c8d9b7e).
-    container: ghcr.io/glitchwerks/claude-runtime-fix@sha256:da2b6e52ad20159252cb6f24147d4ece221182dbb0b21df9fb32966126e24a20
+    # Digest source: runtime-build run 25398539323 (post-#195 rebuild, unzip+gh baked in).
+    container: ghcr.io/glitchwerks/claude-runtime-fix@sha256:3e8fd1b77b5e92c83f759059fc76c764f84f3d85ca14df3af4c27979febded24
     concurrency:
       group: claude-lint-failure-${{ github.repository }}-${{ inputs.pr_number }}
       cancel-in-progress: true

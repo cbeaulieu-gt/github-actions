@@ -84,6 +84,8 @@ The build workflow `.github/workflows/runtime-build.yml` runs STAGE 1 on `pull_r
 
 **Phase 3 status (post-merge of this PR):** three overlay images at `ghcr.io/glitchwerks/claude-runtime-{review,fix,explain}@sha256:<digest>` build FROM the Phase 2 base. Each overlay carries verb-specific agents/plugins per `overlays.<verb>.imports_from_private` and a verb-scoped `runtime/overlays/<verb>/CLAUDE.md` that becomes the active persona at job time (replaces the base shared CLAUDE.md per §3.4 layer 2). Each overlay also declares an `expected.yaml` inventory contract that the matcher (`runtime/scripts/inventory-match.sh`) enforces in STAGE 4-overlay smoke. The "different eyes" guarantee (§3.1, §10.2) is enforced mechanically — a future edit that accidentally imports `code-writer` into review fails the build. Phase 3 also introduces `overlays.<verb>.subtract_from_shared.plugins` (manifest schema extension; see spec §4.2/§5.1 amendments) to remove base-inherited plugins from a specific overlay (review subtracts `skill-creator`). Issue [#141](https://github.com/glitchwerks/github-actions/issues/141).
 
+**Phase 5 image refresh (post-#194):** PR [#195](https://github.com/glitchwerks/github-actions/pull/195) rebuilt the runtime base image with `unzip` and `gh` baked in, producing new overlay digests on the post-merge `runtime-build` run (run id 25398539323); the five container-pinned reusable workflows and the `claude-tag-respond.yml` dispatch mapping were repointed to those new digests in PR-B of [#194](https://github.com/glitchwerks/github-actions/issues/194). The underlying overlay set, layer model, and "different eyes" guarantee are unchanged.
+
 ## Versioning
 
 - `v2.0.0` — pinned tag for reproducible builds

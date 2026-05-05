@@ -39,8 +39,8 @@ jobs:
     runs-on: ubuntu-latest
     # Phase 5: pin the fix overlay image by SHA256 digest. The fix overlay
     # carries the agent set required for code-write tasks (per spec §7.5).
-    # Digest source: STAGE 3 build run 25261308990 (Phase 3 merge, c8d9b7e).
-    container: ghcr.io/glitchwerks/claude-runtime-fix@sha256:da2b6e52ad20159252cb6f24147d4ece221182dbb0b21df9fb32966126e24a20
+    # Digest source: runtime-build run 25398539323 (post-#195 rebuild, unzip+gh baked in).
+    container: ghcr.io/glitchwerks/claude-runtime-fix@sha256:3e8fd1b77b5e92c83f759059fc76c764f84f3d85ca14df3af4c27979febded24
     concurrency:
       group: claude-apply-fix-${{ github.repository }}-${{ inputs.pr_number }}
       cancel-in-progress: false
