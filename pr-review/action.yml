@@ -20,6 +20,21 @@ runs:
     - uses: actions/checkout@v5
       with:
         fetch-depth: 0
+        # On `pull_request_target`, `actions/checkout@v5` defaults to the base
+        # ref — so PR-only files (e.g. workflows added in the PR branch) do not
+        # exist in the working tree. `claude-code-action@v1`'s `track_progress`
+        # setup runs `git hash-object` against the PR-changed file list and
+        # recovers via `git fetch origin --depth=20 <head-branch>`; both fail
+        # without the head ref present (#197).
+        #
+        # Checking out the head SHA on `pull_request_target` is the canonical
+        # GitHub Actions footgun (fork code on disk + privileged secrets), but
+        # it is safe in this composite action because no step before the
+        # `Check author association` authz gate executes content from the
+        # working tree — every pre-gate step uses `gh` API calls or pure shell
+        # on event-payload env vars. The gated `claude-code-action@v1` step is
+        # skipped for non-OWNER/MEMBER/COLLABORATOR PRs.
+        ref: ${{ github.event.pull_request.head.sha }}
 
     - name: Resolve diff base
       if: github.event.action == 'synchronize'
