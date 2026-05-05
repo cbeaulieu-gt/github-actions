@@ -28,6 +28,7 @@ on:
 # External consumers using workflow_call must declare pull-requests: write in their own caller workflow.
 permissions:
   contents: read
+  packages: read
   pull-requests: write
   statuses: write
 

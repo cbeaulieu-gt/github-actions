@@ -47,6 +47,7 @@ permissions:
   contents: write
   pull-requests: write
   actions: read
+  packages: read
 
 jobs:
   diagnose:
