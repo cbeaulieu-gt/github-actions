@@ -31,12 +31,30 @@ LABEL org.opencontainers.image.source="https://github.com/glitchwerks/github-act
 # Minimum runtime deps. Combine RUN steps to shrink layer count.
 # `git` and `curl` are needed by the Claude Code CLI install path; `ca-certificates`
 # for HTTPS; `jq` is required by smoke-test.sh's structured-output parser.
+# `unzip` is required by `oven-sh/setup-bun@v1` (transitively used by
+# `claude-code-action@v1`) to extract its tarball.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
       git \
       jq \
+      unzip \
+ && rm -rf /var/lib/apt/lists/*
+
+# Install GitHub CLI (`gh`) from the official cli.github.com apt repo.
+# Required by composite actions in this repo (pr-review, apply-fix, lint-failure,
+# ci-failure, tag-claude) — they shell out to `gh` for PR diff fetching, status
+# creation, comment posting, and dedup. claude-code-action@v1 also exposes gh
+# subcommands to the AI via --allowedTools (Bash(gh pr diff:*), Bash(gh pr review:*),
+# Bash(gh pr view:*)). See issue #194 for the full call-site map.
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code CLI at the pinned version. The version flows from the
