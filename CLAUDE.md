@@ -86,6 +86,8 @@ The build workflow `.github/workflows/runtime-build.yml` runs STAGE 1 on `pull_r
 
 **Phase 5 image refresh (post-#194):** PR [#195](https://github.com/glitchwerks/github-actions/pull/195) rebuilt the runtime base image with `unzip` and `gh` baked in, producing new overlay digests on the post-merge `runtime-build` run (run id 25398539323); the five container-pinned reusable workflows and the `claude-tag-respond.yml` dispatch mapping were repointed to those new digests in PR-B of [#194](https://github.com/glitchwerks/github-actions/issues/194). The underlying overlay set, layer model, and "different eyes" guarantee are unchanged.
 
+**Overlay smoke test (`overlay-smoke.yml`):** `.github/workflows/overlay-smoke.yml` runs daily (06:17 UTC) and on `workflow_dispatch`. It greps the digest pins directly from existing `claude-*.yml` workflow files (no separate source-of-truth copy that could drift) and attempts a `docker pull` for each of the three overlays. If a pull fails, the workflow opens a deduped GitHub issue titled `Overlay smoke test failed: <verb>` — or appends a comment to the existing open issue — and exits non-zero so the run shows as failed. To triage a failure: check the Actions run log for the Docker error, then rebuild the affected overlay via `runtime-build.yml` and update the digest pin in the relevant `claude-*.yml` workflow file. Issue [#190](https://github.com/glitchwerks/github-actions/issues/190).
+
 ## Versioning
 
 - `v2.0.0` — pinned tag for reproducible builds

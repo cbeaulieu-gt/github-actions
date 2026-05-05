@@ -1,0 +1,124 @@
+name: Overlay Image Smoke Test
+
+# Periodic pull-verify for the three digest-pinned overlay images.
+# Gap closed: GHCR can lose a layer or a future digest bump can typo; this
+# workflow catches the breakage before a user PR is affected.
+# Issue: #190
+#
+# Digest source-of-truth: the existing `claude-*.yml` workflow files — grepped
+# at runtime so this workflow never owns a separate copy that could drift.
+# The three overlays are: review, fix, explain.
+
+on:
+  schedule:
+    # Daily at 06:17 UTC — off-peak, avoids the hour mark to reduce collision
+    # with other repos' scheduled jobs.
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  smoke:
+    name: Pull overlay images
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        overlay: [review, fix, explain]
+    steps:
+      - name: Checkout (for workflow file digest grep)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Resolve digest for overlay
+        id: digest
+        shell: bash
+        env:
+          OVERLAY: ${{ matrix.overlay }}
+        run: |
+          set -euo pipefail
+          # Grep all workflow files for lines referencing this overlay image and
+          # extract the @sha256:<hex> suffix.  The authoritative pins live in
+          # claude-pr-review.yml (review), claude-apply-fix.yml (fix), and
+          # claude-tag-respond.yml (explain / all three in the case block).
+          IMG=$(grep -rh "claude-runtime-${OVERLAY}@sha256:" .github/workflows/ \
+                  | grep -oE 'ghcr\.io/glitchwerks/claude-runtime-[^@]+@sha256:[a-f0-9]+' \
+                  | sort -u \
+                  | head -n1)
+          if [ -z "$IMG" ]; then
+            echo "::error::No digest found for overlay '${OVERLAY}' in .github/workflows/"
+            exit 1
+          fi
+          echo "image=${IMG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved: ${IMG}"
+
+      - name: Docker pull overlay image
+        id: pull
+        shell: bash
+        env:
+          IMAGE: ${{ steps.digest.outputs.image }}
+        run: |
+          set -euo pipefail
+          echo "Pulling: ${IMAGE}"
+          docker pull "${IMAGE}"
+          echo "Pull succeeded."
+
+      - name: Report failure and dedup issue
+        if: failure() && steps.pull.outcome == 'failure'
+        shell: bash
+        # shellcheck disable=SC2016
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERLAY: ${{ matrix.overlay }}
+          IMAGE: ${{ steps.digest.outputs.image }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="Overlay smoke test failed: ${OVERLAY}"
+          # Search for an existing open issue with this exact title to avoid
+          # creating one per-run. Title is stable (no digest/run id) so the
+          # dedup key is consistent across failures for the same overlay.
+          EXISTING_NUMBER=$(gh issue list \
+            --state open \
+            --search "\"${TITLE}\" in:title" \
+            --json number,title \
+            --jq ".[] | select(.title == \"${TITLE}\") | .number" \
+            | head -n1)
+
+          BODY="$(cat <<EOF
+          **Overlay:** \`${OVERLAY}\`
+          **Image:** \`${IMAGE}\`
+          **Run:** ${RUN_URL}
+
+          The \`docker pull\` for this digest-pinned overlay failed, which means consumer
+          workflows that use this overlay will also fail. Possible causes:
+          - A GHCR layer was garbage-collected or corrupted
+          - The digest pin in a \`claude-*.yml\` workflow file contains a typo
+          - GHCR experienced a transient outage (re-run the smoke workflow to verify)
+
+          **Next steps:** check the run log at the URL above for the exact Docker error,
+          then rebuild the affected overlay via \`.github/workflows/runtime-build.yml\`
+          and update the digest pin.
+          EOF
+          )"
+
+          if [ -z "$EXISTING_NUMBER" ]; then
+            gh issue create \
+              --title "${TITLE}" \
+              --body "${BODY}" \
+              --label "bug"
+          else
+            gh issue comment "${EXISTING_NUMBER}" \
+              --body "$(cat <<EOF
+          Smoke test still failing (run: ${RUN_URL})
+
+          **Image:** \`${IMAGE}\`
+          EOF
+              )"
+          fi
+          # Always exit non-zero so the run is marked failed.
+          exit 1
