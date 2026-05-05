@@ -31,6 +31,7 @@ on:
 # workflows from external consumers.
 permissions:
   contents: write
+  packages: read
   pull-requests: write
 
 jobs:
