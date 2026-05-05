@@ -38,24 +38,32 @@ runs:
 
     - name: Mark workspace as safe for git
       shell: bash
-      # The digest-pinned overlay container runs as a non-root UID (per spec §10
-      # — the `runner` user baked into the runtime base image), but
-      # `actions/checkout` writes files as the host runner UID. Inside the
-      # container the workspace appears owned by a different user, so git's
-      # CVE-2022-24765 protection (`safe.directory`) refuses to operate on it.
-      # `claude-code-action@v1`'s setup phase invokes git internally
-      # (`git config`, `git fetch`, `git hash-object`) and trips this guard,
-      # producing the `fatal: detected dubious ownership` error visible in the
-      # PR #198 first-commit run. Marking the workspace safe is the canonical
-      # fix per https://git-scm.com/docs/git-config#Documentation/git-config.txt-safedirectory.
+      # The digest-pinned overlay container runs as a non-root UID under some
+      # invocation paths (per spec §10 — `runner` user at UID 1001 in the
+      # runtime base image), but `actions/checkout` writes files as the host
+      # runner UID. Inside the container the workspace appears owned by a
+      # different user, so git's CVE-2022-24765 protection (`safe.directory`)
+      # refuses to operate on it. `claude-code-action@v1`'s setup phase
+      # invokes git internally (`git config`, `git fetch`, `git hash-object`)
+      # and trips this guard.
+      #
+      # Use `--system` (writes to `/etc/gitconfig`, world-readable, no HOME
+      # dependency) rather than `--global` (per-user, depends on $HOME). The
+      # bun-invoked TypeScript entrypoint of claude-code-action resolves $HOME
+      # differently than this shell step, so a `--global` write is invisible
+      # to it — confirmed empirically on PR #198 run 25401775107 where the
+      # `--global` form executed but claude-code-action still tripped
+      # `dubious ownership` on its next git invocation. Use `*` rather than
+      # `$GITHUB_WORKSPACE` so the exemption is robust to any nested git
+      # operation (including ones outside the workspace path).
       #
       # Systemic note: this is latent in every other Phase 5 (#188) container-
-      # pinned reusable workflow. The durable fix is to bake `safe.directory *`
-      # into the runtime base image's entrypoint; tracked separately as a
-      # follow-up issue. This composite action gets the targeted fix here so
-      # PR #198 can land independently.
+      # pinned reusable workflow. The durable fix is to bake
+      # `git config --system --add safe.directory '*'` into the runtime base
+      # image's Dockerfile — tracked as #199. This composite action gets the
+      # targeted fix here so PR #198 can land independently.
       run: |
-        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        git config --system --add safe.directory '*'
 
     - name: Resolve diff base
       if: github.event.action == 'synchronize'
