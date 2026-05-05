@@ -186,6 +186,24 @@ for label in "${EXPECTED_LABELS[@]}"; do
 done
 echo "smoke-test: labels OK (${#EXPECTED_LABELS[@]} labels present)"
 
+# ---- (d.5) safe.directory bake-in check (#199) ----------------------------
+# Verify CVE-2022-24765 / safe.directory exemption is baked into /etc/gitconfig
+# so git operations succeed inside the container regardless of UID drift between
+# the host runner (which writes the workspace) and the container UID.
+SAFE_DIR=$(docker run --rm --user "$SMOKE_UID" --entrypoint /bin/sh "$IMAGE" \
+  -c 'git config --system --get-all safe.directory' 2>/dev/null || true)
+
+if ! printf '%s\n' "$SAFE_DIR" | grep -qx '\*'; then
+  echo "ERROR safe_directory_missing image=$IMAGE" >&2
+  echo "       /etc/gitconfig must contain 'safe.directory = *' to prevent" >&2
+  echo "       'detected dubious ownership' failures on actions/checkout-written" >&2
+  echo "       workspaces. Got:" >&2
+  printf '       %s\n' "${SAFE_DIR:-<empty>}" >&2
+  exit 1
+fi
+
+echo "smoke-test: safe.directory OK (system gitconfig contains '*')"
+
 # ---- (e) R3 perms regression check ----------------------------------------
 # R3 demands directories 0755, files 0644 under /opt/claude/.claude. A future
 # Dockerfile RUN step could flip perms back; this catches it mechanically.

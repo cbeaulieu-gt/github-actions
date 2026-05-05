@@ -42,6 +42,28 @@ RUN apt-get update \
       unzip \
  && rm -rf /var/lib/apt/lists/*
 
+# CVE-2022-24765 / safe.directory bake-in (#199, #197).
+#
+# `actions/checkout` writes the workspace as the host runner UID, but inside
+# the container that owner does not match the running UID — git refuses to
+# operate on the repo with `fatal: detected dubious ownership`. This trips
+# `claude-code-action@v1`'s `git fetch` / `git hash-object` setup, blocking
+# every workflow that touches the workspace via git.
+#
+# Use `--system` (writes /etc/gitconfig — read by every UID, no $HOME
+# dependency) and `*` (any path — robust to nested git operations and to
+# future workspace path changes). `--global` is insufficient because the
+# bun-invoked TypeScript entrypoint of claude-code-action resolves $HOME
+# differently than a typical shell step (PR #198 commit 7fd62e3 confirmed
+# this empirically).
+#
+# Security note: `safe.directory '*'` disables the CVE-2022-24765 check
+# globally inside the container. The CVE protected against an attacker
+# planting a malicious `.git/config` in a directory the user cd's into.
+# Inside an ephemeral GHA container with a workspace that we own, this
+# threat does not apply. Spec §7.3 amendment captures the rationale.
+RUN git config --system --add safe.directory '*'
+
 # Install GitHub CLI (`gh`) from the official cli.github.com apt repo.
 # Required by composite actions in this repo (pr-review, apply-fix, lint-failure,
 # ci-failure, tag-claude) — they shell out to `gh` for PR diff fetching, status
