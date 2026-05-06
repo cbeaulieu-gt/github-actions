@@ -58,7 +58,7 @@ jobs:
     # and the auto-apply path (auto_apply: true) — the composite action's
     # behavior switches on the input, the image does not.
     # Digest source: STAGE 3 build run 25405636887 (post-#200 rebuild, 3bb6a22) — base image bakes safe.directory '*' (#199, #197).
-    container: ghcr.io/glitchwerks/claude-runtime-fix@sha256:2474e5ce130dca5db44088a5cf1bc22999c0944abf065df47999b018b838b286
+    container: ghcr.io/glitchwerks/claude-runtime-fix@sha256:272eff0d6d67f368920938c58ebf24cce96cb4f66df55c8a733f6411f92eda5c
     concurrency:
       group: claude-lint-failure-${{ github.repository }}-${{ inputs.pr_number }}
       cancel-in-progress: true
