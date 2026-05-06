@@ -1,0 +1,267 @@
+name: runtime-check-private-freshness
+
+# Weekly drift alarm: checks whether the manifest's pinned ci-v* tag in
+# glitchwerks/claude-configs has fallen behind main on paths imported by the
+# runtime build.  If non-zero imported-path commits AND calendar gap > 14 days,
+# opens a deduped GitHub issue prompting a manual pin-bump review.
+#
+# Spec: §11.3 + §13 Q7 (path-scoped denominator).
+# Epic: #144  App-install dependency: #206
+
+on:
+  schedule:
+    # Mondays 08:00 UTC — weekly cadence per spec §11.3.
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+    inputs:
+      simulate_stale:
+        description: "Force-emit a stale issue regardless of actual gap (for rehearsals)."
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    name: Check pinned ci-v* against private/main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Install yq (SHA256-verified)
+        run: |
+          set -euo pipefail
+          # SHA256 verification (#209 review item #1 Critical): refuse to install
+          # if the binary doesn't match the upstream-published hash. Verified
+          # 2026-05-05 against the official checksums file at
+          # https://github.com/mikefarah/yq/releases/download/v4.44.3/checksums
+          # (SHA-256 column, per checksums_hashes_order).
+          YQ_SHA256="a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7"
+          sudo curl -fsSL -o /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          echo "${YQ_SHA256}  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod 0755 /usr/local/bin/yq
+
+      - name: Read manifest pin and build import-path list
+        id: pin
+        run: |
+          set -euo pipefail
+          REF=$(yq -r '.sources.private.ref' runtime/ci-manifest.yaml)
+          echo "Pinned ref: $REF"
+
+          # Shared-level imports_from_private
+          mapfile -t SKILLS < <(yq -r '.shared.imports_from_private.skills // [] | .[]' runtime/ci-manifest.yaml)
+          mapfile -t AGENTS < <(yq -r '.shared.imports_from_private.agents // [] | .[]' runtime/ci-manifest.yaml)
+          CLAUDE_MD=$(yq -r '.shared.imports_from_private.claude_md // "CLAUDE.md"' runtime/ci-manifest.yaml)
+          STANDARDS=$(yq -r '.shared.imports_from_private.standards // ""' runtime/ci-manifest.yaml)
+
+          PATHS=()
+          for s in "${SKILLS[@]}"; do PATHS+=("skills/$s/"); done
+          for a in "${AGENTS[@]}"; do PATHS+=("agents/$a.md"); done
+          [ -n "$CLAUDE_MD"  ] && PATHS+=("$CLAUDE_MD")
+          [ -n "$STANDARDS"  ] && PATHS+=("$STANDARDS")
+
+          # Overlay-level imports_from_private (agents only — skills are shared-only)
+          mapfile -t OV_AGENTS < <(yq -r \
+            '.overlays | to_entries | .[] | .value.imports_from_private.agents // [] | .[]' \
+            runtime/ci-manifest.yaml)
+          for a in "${OV_AGENTS[@]}"; do PATHS+=("agents/$a.md"); done
+
+          # Deduplicate
+          mapfile -t PATHS < <(printf '%s\n' "${PATHS[@]}" | sort -u)
+
+          echo "Import paths to scan:"
+          printf '  %s\n' "${PATHS[@]}"
+          printf '%s\n' "${PATHS[@]}" > /tmp/import-paths.txt
+
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve App token for claude-configs access
+        id: token
+        # SHA-pinned to v3.1.1 per action-pinning convention.
+        # NOTE: The App must be installed on glitchwerks/claude-configs (tracked
+        # in #206).  Until that install lands, this step will fail with an
+        # authorization error — that's expected and tracked.  No code change
+        # needed once the install is in place.
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3  # v3.1.1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          # Scope token to the private repo only — least-privilege.
+          repositories: claude-configs
+
+      - name: Clone claude-configs at pinned ref + main
+        env:
+          APP_TOKEN: ${{ steps.token.outputs.token }}
+          REF: ${{ steps.pin.outputs.ref }}
+        run: |
+          set -euo pipefail
+          # #209 review item #2 High: explicit if-check instead of `:?` — `:?`
+          # echoes the variable's value to stderr if set-but-empty, which would
+          # leak the App token in workflow logs.
+          if [ -z "${APP_TOKEN:-}" ]; then
+            echo "::error::App token not set — check APP_ID/APP_PRIVATE_KEY secrets and #206 install status" >&2
+            exit 1
+          fi
+
+          git clone --depth=1 --no-tags \
+            "https://x-access-token:${APP_TOKEN}@github.com/glitchwerks/claude-configs.git" \
+            /tmp/cc
+
+          # Fetch the pinned tag and main so both refs are local.
+          git -C /tmp/cc fetch --no-tags origin "refs/tags/${REF}:refs/tags/${REF}"
+          git -C /tmp/cc fetch --no-tags origin main
+
+          PINNED_SHA=$(git -C /tmp/cc rev-list -n1 "refs/tags/${REF}")
+          MAIN_SHA=$(git -C /tmp/cc rev-parse origin/main)
+          PINNED_DATE=$(git -C /tmp/cc log -1 --format=%cI "$PINNED_SHA")
+          MAIN_DATE=$(git -C /tmp/cc log -1 --format=%cI "$MAIN_SHA")
+
+          # SC2129 fix: combine multiple >> redirects into a single brace block.
+          {
+            echo "PINNED_SHA=$PINNED_SHA"
+            echo "MAIN_SHA=$MAIN_SHA"
+            echo "PINNED_DATE=$PINNED_DATE"
+            echo "MAIN_DATE=$MAIN_DATE"
+          } >> "$GITHUB_ENV"
+          echo "Pinned: $PINNED_SHA ($PINNED_DATE)"
+          echo "Main:   $MAIN_SHA ($MAIN_DATE)"
+
+      - name: Compute path-scoped commit count and calendar gap
+        run: |
+          set -euo pipefail
+          mapfile -t PATHS < /tmp/import-paths.txt
+
+          # Path-scoped log per spec §13 Q7 — drift on non-imported paths is ignored.
+          COMMITS_AHEAD=$(git -C /tmp/cc log --oneline \
+            "${PINNED_SHA}..${MAIN_SHA}" -- "${PATHS[@]}" 2>/dev/null | wc -l)
+
+          # Calendar gap in whole days.
+          DAYS_GAP=$(( ( $(date -d "$MAIN_DATE" +%s) - $(date -d "$PINNED_DATE" +%s) ) / 86400 ))
+
+          # #209 review item #7: guard against negative gap (force-push in
+          # private repo could rewind main and produce a confusing
+          # "-N days behind" issue title). Treat negative as not-stale and exit.
+          if [ "$DAYS_GAP" -lt 0 ]; then
+            echo "::warning::Pinned ref ($PINNED_DATE) is NEWER than main ($MAIN_DATE) — possible force-push or main rewind in private repo. Skipping staleness check."
+            exit 0
+          fi
+
+          {
+            echo "COMMITS_AHEAD=$COMMITS_AHEAD"
+            echo "DAYS_GAP=$DAYS_GAP"
+          } >> "$GITHUB_ENV"
+          echo "Result: $COMMITS_AHEAD imported-path commits ahead, gap = ${DAYS_GAP} days"
+
+      - name: Open staleness issue (idempotent dedupe)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF: ${{ steps.pin.outputs.ref }}
+          SIMULATE: ${{ inputs.simulate_stale || 'false' }}
+        run: |
+          # shellcheck disable=SC2016
+          set -euo pipefail
+
+          STALE=false
+          if [ "$SIMULATE" = "true" ]; then
+            STALE=true
+            REASON="simulate_stale=true (rehearsal run)"
+          elif [ "$COMMITS_AHEAD" -gt 0 ] && [ "$DAYS_GAP" -gt 14 ]; then
+            STALE=true
+            REASON="${COMMITS_AHEAD} imported-path commit(s) ahead of pin, ${DAYS_GAP}d gap exceeds 14d threshold"
+          fi
+
+          if [ "$STALE" != "true" ]; then
+            echo "Pinned ref is fresh (${COMMITS_AHEAD} commits, ${DAYS_GAP}d gap) — no issue opened."
+            exit 0
+          fi
+
+          TITLE="Stale private-ref: ${REF} is ${COMMITS_AHEAD} commits / ${DAYS_GAP} days behind main on imported paths"
+
+          # Dedupe: check for an existing open issue with this exact title.
+          EXISTING_NUMBER=$(gh issue list \
+            --state open \
+            --search "\"${TITLE}\" in:title" \
+            --json number,title \
+            --jq ".[] | select(.title == \"${TITLE}\") | .number" \
+            | head -n1)
+
+          # Build commit summary (no-merges, first 30 lines for readability).
+          # SC2016 disabled: the git --pretty format string contains literal
+          # backticks intended for Markdown rendering, not shell command
+          # substitution. Single quotes preserve them as-is.
+          mapfile -t PATHS < /tmp/import-paths.txt
+          # shellcheck disable=SC2016
+          COMMIT_LOG=$(git -C /tmp/cc log --no-merges \
+            --pretty=format:'- `%h` %s' \
+            "${PINNED_SHA}..${MAIN_SHA}" -- "${PATHS[@]}" 2>/dev/null \
+            | head -30 || true)
+          [ -z "$COMMIT_LOG" ] && COMMIT_LOG="_(no individual commits listed — may be a merge-only range)_"
+
+          # shellcheck disable=SC2016
+          PATH_LIST=$(awk '{print "- `" $0 "`"}' /tmp/import-paths.txt)
+
+          # Build body via printf — heredocs leak leading whitespace as
+          # Markdown indented-code-blocks, which would break every table and
+          # list below. printf with explicit '\n' is whitespace-precise.
+          # SC2016 disabled on the whole brace block: the printf format
+          # strings contain literal Markdown backticks (intentional), not
+          # shell command substitutions. Disabling at the compound-command
+          # level avoids 9 individual disables.
+          # shellcheck disable=SC2016
+          {
+            printf 'Automated freshness check from `runtime-check-private-freshness.yml`.\n\n'
+            printf '### Summary\n\n'
+            printf '| Field | Value |\n'
+            printf '|---|---|\n'
+            printf '| **Reason** | %s |\n' "$REASON"
+            printf '| **Pinned ref** | `%s` → `%s` |\n' "$REF" "$PINNED_SHA"
+            printf '| **Pinned date** | %s |\n' "$PINNED_DATE"
+            printf '| **private/main HEAD** | `%s` |\n' "$MAIN_SHA"
+            printf '| **main date** | %s |\n' "$MAIN_DATE"
+            printf '| **Imported-path commits ahead** | %s |\n' "$COMMITS_AHEAD"
+            printf '| **Calendar gap** | %s days |\n\n' "$DAYS_GAP"
+            printf '### Commits on imported paths since pin\n\n'
+            printf '%s\n\n' "$COMMIT_LOG"
+            printf '### Scanned import paths\n\n'
+            printf '%s\n\n' "$PATH_LIST"
+            printf '### Remediation\n\n'
+            printf 'Per project CLAUDE.md: _"bumping `sources.private.ref` requires a manual review of the git diff between the old and new tag."_\n\n'
+            printf '1. Review `git diff %s..main -- <imported-paths>` in `glitchwerks/claude-configs`.\n' "$REF"
+            printf '2. If the changes are safe to ingest, cut a new `ci-v<semver>` tag in `glitchwerks/claude-configs`.\n'
+            printf '3. Bump `sources.private.ref` in `runtime/ci-manifest.yaml` and open a PR.\n'
+            printf '4. The `runtime-build.yml` STAGE 1 validate-manifest step will confirm the new tag resolves.\n\n'
+            printf 'Refs #144 (Phase 6 epic) — App install dependency: #206.\n\n'
+            printf '🤖 _Generated by Claude Code on behalf of @cbeaulieu-gt_\n'
+          } > /tmp/issue-body.md
+
+          # Labels: only those that exist in this repo. `runtime` and
+          # `stale-private-ref` would 'gh issue create: not found' at runtime.
+          # Existing label set scanned 2026-05-05 — see #205/#206 for the
+          # same constraint. epic-130 threads onto the parent epic.
+          if [ -z "$EXISTING_NUMBER" ]; then
+            gh issue create \
+              --title "${TITLE}" \
+              --label "ci" --label "infrastructure" --label "epic-130" \
+              --body-file /tmp/issue-body.md
+            echo "Issue created: ${TITLE}"
+          else
+            {
+              printf 'Freshness check re-fired (still stale).\n\n'
+              printf '| Field | Value |\n'
+              printf '|---|---|\n'
+              printf '| **Commits ahead** | %s |\n' "$COMMITS_AHEAD"
+              printf '| **Gap** | %s days |\n' "$DAYS_GAP"
+              printf '| **Reason** | %s |\n\n' "$REASON"
+              printf '🤖 _Generated by Claude Code on behalf of @cbeaulieu-gt_\n'
+            } > /tmp/comment-body.md
+            gh issue comment "${EXISTING_NUMBER}" --body-file /tmp/comment-body.md
+            echo "Appended comment to existing issue #${EXISTING_NUMBER}."
+          fi

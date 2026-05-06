@@ -8,6 +8,13 @@ sources:
     ref: ci-v0.1.0
   marketplace:
     repo: anthropics/claude-plugins-official
+    # Bump cadence: MANUAL on observed value (spec §13 Q5, resolved in PR #208).
+    # Every PR that bumps this SHA MUST include in the body a `git diff` of
+    # the marketplace repo between old and new SHA, scoped to plugin paths
+    # that appear in this manifest. See spec §10.2 "Marketplace bump review
+    # containment". Automation is intentionally absent — marketplace upstream
+    # changes (agent renames, hook schema shifts, package layout changes)
+    # require human review before promotion.
     ref: 0742692199b49af5c6c33cd68ee674fb2e679d50
 
 shared:

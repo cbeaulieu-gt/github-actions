@@ -1,0 +1,306 @@
+name: runtime-rollback
+
+# Per spec §9.3 + Phase 6 plan Task 6.3 (#144). Targeted rollback for
+# the digest-pinned overlay set: opens a PR reverting all 7 @sha256:
+# references across 5 reusable workflows to the digest set tagged
+# :<target_pubsha> in GHCR. Mirrors STAGE 5's PR mechanism in reverse.
+#
+# Authorization model (plan §"Authorization model — Option A"):
+#   1. workflow_dispatch permission gates invocation
+#   2. OCI org.opencontainers.image.revision label assertion (Step 6.3.5a)
+#   3. inventory-match + smoke validation against target digests (Steps 6.3.5b/c)
+#   4. Human merge approval (final gate)
+#
+# Path deviation from master plan: lives at .github/workflows/runtime-rollback.yml
+# (master plan said runtime/rollback.yml). GitHub Actions only auto-discovers
+# workflows under .github/workflows/, so master plan path was wrong; documented
+# in Phase 6 plan Task 6.4 DECISION POINT.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_pubsha:
+        description: |
+          40-char hex pubsha to roll back to. Workflow validates SHAPE only;
+          it does NOT verify target_pubsha was a previously-promoted build.
+          Reviewers of the rollback PR are the second gate — confirm via:
+            git log --grep='auto/runtime-promote-' main --format=%H
+          that target_pubsha appears as a previously-promoted build.
+        required: true
+        type: string
+      dry_run:
+        description: "Open PR as draft and skip auto-merge. Use for rehearsals."
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    name: Open rollback PR for ${{ inputs.target_pubsha }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      packages: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          # fetch-depth: 0 needed for the promote-history check below to walk
+          # main's commits looking for an `auto/runtime-promote-<TARGET>` commit
+          # (#209 review item #6).
+          fetch-depth: 0
+
+      - name: Resolve App token
+        id: token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3  # v3.1.1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Validate target_pubsha shape
+        env:
+          TARGET: ${{ inputs.target_pubsha }}
+        run: |
+          set -euo pipefail
+          if [ "${#TARGET}" -ne 40 ] || [ -n "${TARGET//[0-9a-fA-F]/}" ]; then
+            echo "ERROR invalid_target_pubsha value=$TARGET — must be a 40-char git SHA" >&2
+            exit 1
+          fi
+          echo "target_pubsha shape OK: $TARGET"
+
+      - name: Verify target_pubsha appears in promote history (#209 #6)
+        env:
+          TARGET: ${{ inputs.target_pubsha }}
+        run: |
+          set -euo pipefail
+          # Defense-in-depth: the rollback PR's reviewer-checklist asks the
+          # human to confirm TARGET appears in promote history; this step
+          # automates that check so an operator typo or invented pubsha is
+          # caught before the rollback PR opens.
+          #
+          # What to grep for: STAGE 5 (runtime-build.yml step "Open digest-bump
+          # PR") opens a PR titled `promote: runtime images @<github.sha>`.
+          # When that PR squash-merges, the merge commit on main inherits the
+          # PR title as its subject, so `git log --grep="promote: runtime
+          # images @${TARGET}"` finds it. Note: the branch name
+          # `auto/runtime-promote-<sha>` does NOT appear in any commit
+          # message — it only exists as a git ref.
+          if ! git -C "$GITHUB_WORKSPACE" log --grep="promote: runtime images @${TARGET}" origin/main --format=%H | head -n1 | grep -q .; then
+            echo "::error::target_pubsha $TARGET does not appear in promote history on origin/main (no merge commit subject matches 'promote: runtime images @${TARGET}'). Either the pubsha is invalid, the promote PR never merged, or the PR was merged with a non-default merge method that didn't preserve the title as the commit subject." >&2
+            exit 1
+          fi
+          echo "target_pubsha appears in promote history: OK (matched merge commit on origin/main)"
+
+      - name: Login to GHCR (read)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve target digests
+        env:
+          TARGET: ${{ inputs.target_pubsha }}
+        run: |
+          set -euo pipefail
+          for ov in review fix explain; do
+            ref="ghcr.io/glitchwerks/claude-runtime-${ov}:${TARGET}"
+            if ! docker pull "$ref" >/dev/null 2>&1; then
+              echo "::error::rollback target tag missing: $ref does not exist in GHCR" >&2
+              echo "       Either target_pubsha is wrong, or the :<pubsha> tag was pruned (see runtime-prune-pending.yml)." >&2
+              exit 1
+            fi
+            digest=$(docker inspect "$ref" --format '{{ range .RepoDigests }}{{ . }}{{ "\n" }}{{ end }}' \
+              | grep "claude-runtime-${ov}@sha256:" | head -1 \
+              | sed -E "s|.*@sha256:||")
+            if [ "${#digest}" -ne 64 ] || [ -n "${digest//[0-9a-fA-F]/}" ]; then
+              echo "::error::resolved digest invalid for $ov: '$digest'" >&2
+              exit 1
+            fi
+            upper=$(echo "$ov" | tr '[:lower:]' '[:upper:]')
+            echo "${upper}_DIGEST=$digest" >> "$GITHUB_ENV"
+            echo "  rollback target $ov -> @sha256:${digest:0:12}…"
+          done
+
+      - name: Verify target digests carry expected revision label (Step 6.3.5a)
+        env:
+          TARGET: ${{ inputs.target_pubsha }}
+        run: |
+          set -euo pipefail
+          # GHCR has tag immutability disabled (per #173). A :<pubsha> tag can
+          # be retagged or deleted. Assert the resolved image still claims to
+          # be from the requested pubsha by reading the standard OCI label
+          # org.opencontainers.image.revision (set by --build-arg PUB_SHA in
+          # the Dockerfile LABEL block, lines 22-29). Catches retag drift.
+          for ov in review fix explain; do
+            upper=$(echo "$ov" | tr '[:lower:]' '[:upper:]')
+            eval "DIGEST=\${${upper}_DIGEST}"
+            label=$(docker inspect \
+              --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+              "ghcr.io/glitchwerks/claude-runtime-${ov}@sha256:${DIGEST}")
+            if [ "$label" != "$TARGET" ]; then
+              echo "::error::Overlay $ov resolved digest $DIGEST has revision label '$label', expected '$TARGET'. Tag retag drift detected — refusing to roll back." >&2
+              exit 1
+            fi
+            echo "  $ov revision label OK: org.opencontainers.image.revision=$label"
+          done
+
+      - name: Capture runner UID (smoke-test prereq)
+        id: uid
+        run: echo "uid=$(bash runtime/scripts/capture-runner-uid.sh)" >> "$GITHUB_OUTPUT"
+
+      - name: Install yq (inventory-match prereq, SHA256-verified)
+        run: |
+          set -euo pipefail
+          # SHA256 verification (#209 review item #1 Critical): refuse to install
+          # if the downloaded binary doesn't match the expected hash. Verified
+          # 2026-05-05 against the official checksums file at
+          # https://github.com/mikefarah/yq/releases/download/v4.44.3/checksums
+          # (SHA-256 column, per checksums_hashes_order).
+          YQ_SHA256="a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7"
+          sudo curl -fsSL -o /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          echo "${YQ_SHA256}  /usr/local/bin/yq" | sha256sum -c -
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Validate target digests via inventory-match (Step 6.3.5b)
+        run: |
+          set -euo pipefail
+          # Rolled-back digests must satisfy each overlay's expected.yaml
+          # inventory contract — same check STAGE 4-overlay smoke runs at
+          # build time. Catches rollback targets that were valid when built
+          # but no longer satisfy current expectations.
+          chmod +x runtime/scripts/inventory-match.sh
+          for ov in review fix explain; do
+            upper=$(echo "$ov" | tr '[:lower:]' '[:upper:]')
+            eval "DIGEST=\${${upper}_DIGEST}"
+            bash runtime/scripts/inventory-match.sh \
+              "ghcr.io/glitchwerks/claude-runtime-${ov}@sha256:${DIGEST}" \
+              "runtime/overlays/${ov}/expected.yaml"
+          done
+
+      - name: Validate target digests via smoke-test (Step 6.3.5c)
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CI: "true"
+          SMOKE_UID: ${{ steps.uid.outputs.uid }}
+        run: |
+          set -euo pipefail
+          # Belt-and-braces: also exercise smoke-test.sh that STAGE 4 runs.
+          # If smoke + inventory-match both pass, rolled-back digests are
+          # validated to the same standard as a fresh build.
+          chmod +x runtime/scripts/smoke-test.sh runtime/scripts/enumerate-persona.sh
+          for ov in review fix explain; do
+            upper=$(echo "$ov" | tr '[:lower:]' '[:upper:]')
+            eval "DIGEST=\${${upper}_DIGEST}"
+            EXPECTED_FILE="runtime/overlays/${ov}/expected.yaml" \
+              bash runtime/scripts/smoke-test.sh \
+              "ghcr.io/glitchwerks/claude-runtime-${ov}@sha256:${DIGEST}" "${ov}"
+          done
+
+      - name: Rewrite digest pins to target set
+        # shellcheck disable=SC2016
+        run: |
+          set -euo pipefail
+          FILES=(
+            .github/workflows/claude-pr-review.yml
+            .github/workflows/claude-apply-fix.yml
+            .github/workflows/claude-lint-failure.yml
+            .github/workflows/claude-ci-failure.yml
+            .github/workflows/claude-tag-respond.yml
+          )
+          for f in "${FILES[@]}"; do
+            sed -i -E \
+              -e "s|claude-runtime-review@sha256:[a-f0-9]{64}|claude-runtime-review@sha256:${REVIEW_DIGEST}|g" \
+              -e "s|claude-runtime-fix@sha256:[a-f0-9]{64}|claude-runtime-fix@sha256:${FIX_DIGEST}|g" \
+              -e "s|claude-runtime-explain@sha256:[a-f0-9]{64}|claude-runtime-explain@sha256:${EXPLAIN_DIGEST}|g" \
+              "$f"
+          done
+          # Verify exactly 7 occurrences land. SC2126: grep -c instead of grep|wc -l;
+          # on multiple files grep -c prints <file>:<count> per file, so sum with awk.
+          total=$(grep -cE "claude-runtime-(review|fix|explain)@sha256:[a-f0-9]{64}" "${FILES[@]}" \
+            | awk -F: '{s+=$NF} END {print s+0}')
+          if [ "$total" -ne 7 ]; then
+            echo "::error::digest_count_mismatch expected=7 actual=$total" >&2
+            exit 1
+          fi
+          echo "rollback digest pin rewrite: $total references updated"
+
+      - name: Build PR body
+        env:
+          TARGET: ${{ inputs.target_pubsha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Rollback to runtime images @${TARGET}"
+            echo
+            echo "Targeted rollback per spec §9.3. Restores all 7 \`@sha256:\` references across 5 reusable workflows to the digest set tagged \`:${TARGET}\` in GHCR."
+            echo
+            echo "### Restored digests"
+            echo
+            echo "- **review** \`@sha256:${REVIEW_DIGEST:0:12}…\`"
+            echo "- **fix** \`@sha256:${FIX_DIGEST:0:12}…\`"
+            echo "- **explain** \`@sha256:${EXPLAIN_DIGEST:0:12}…\`"
+            echo
+            echo "### Validation"
+            echo
+            echo "- \`:${TARGET}\` tags resolved cleanly via \`docker pull\` for all 3 overlays."
+            echo "- \`org.opencontainers.image.revision\` label on each digest matches \`${TARGET}\` (no tag retag drift)."
+            echo "- \`inventory-match.sh\` passed against each overlay's \`expected.yaml\` contract."
+            echo "- \`smoke-test.sh\` passed for each overlay (same battery as STAGE 4)."
+            echo "- \`sed -E\` substitution updated exactly 7 occurrences (assertion in workflow)."
+            echo
+            echo "### Reviewer checklist"
+            echo
+            echo "- [ ] Confirm \`${TARGET}\` appears in \`git log --grep='auto/runtime-promote-' main\` (i.e. it was a previously-promoted build, not an arbitrary commit)."
+            echo "- [ ] Confirm the rollback target predates a known regression and the 'different-eyes' invariants are not weakened by reverting."
+            echo
+            echo "🤖 _Generated by Claude Code on behalf of @cbeaulieu-gt_"
+          } > /tmp/pr-body.md
+
+      - name: Normalize inputs.dry_run (Step 6.3.6b)
+        # GHA expressions don't short-circuit like bash: `false || 'true'`
+        # evaluates to the string `'true'` in expression context. Read the
+        # raw input through env and normalize explicitly so peter-evans's
+        # `draft:` input gets a literal true/false, not an expression-evaluated
+        # surprise. Fix introduced by inquisitor pass 2 charge 3.
+        id: mode
+        env:
+          RAW_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          case "${RAW_DRY_RUN:-}" in
+            true|"")  NORMALIZED=true ;;
+            false)    NORMALIZED=false ;;
+            *)
+              echo "::error::Invalid inputs.dry_run value: '$RAW_DRY_RUN'. Must be 'true', 'false', or empty."
+              exit 1
+              ;;
+          esac
+          echo "dry_run=$NORMALIZED" >> "$GITHUB_OUTPUT"
+          echo "rollback dry_run=$NORMALIZED (raw: '$RAW_DRY_RUN')"
+
+      - name: Open rollback PR
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
+        with:
+          token: ${{ steps.token.outputs.token }}
+          commit-message: |
+            rollback: runtime images @${{ inputs.target_pubsha }}
+
+            Targeted rollback per spec §9.3. Restores 7 @sha256: references
+            across 5 reusable workflows to the digest set tagged
+            :${{ inputs.target_pubsha }} in GHCR.
+          branch: auto/runtime-rollback-${{ inputs.target_pubsha }}
+          delete-branch: true
+          draft: ${{ steps.mode.outputs.dry_run }}
+          title: "rollback: runtime images @${{ inputs.target_pubsha }}"
+          body-path: /tmp/pr-body.md
+          labels: |
+            automation
+            ci
+            runtime-rollback

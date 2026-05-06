@@ -186,6 +186,21 @@ for label in "${EXPECTED_LABELS[@]}"; do
 done
 echo "smoke-test: labels OK (${#EXPECTED_LABELS[@]} labels present)"
 
+# ---- (d.4) Label SHAPE assertion: image.revision must be 40-hex (#144) -----
+# Phase 6 runtime-rollback.yml relies on org.opencontainers.image.revision being
+# a valid pubsha (40-char lowercase hex). Section (d) only asserts non-empty;
+# this catches a future Dockerfile refactor that accidentally sets the label to
+# something truthy-but-malformed (e.g. ${{ github.run_id }} instead of
+# ${{ github.sha }}) which would produce a rollback PR that bumps to garbage.
+REVISION_VALUE=$(printf '%s' "$LABELS_JSON" | jq -r '."org.opencontainers.image.revision" // empty')
+if [ "${#REVISION_VALUE}" -ne 40 ] || [ -n "${REVISION_VALUE//[0-9a-f]/}" ]; then
+  echo "ERROR revision_label_malformed image=$IMAGE value=$REVISION_VALUE" >&2
+  echo "       org.opencontainers.image.revision must be a 40-char lowercase hex pubsha." >&2
+  echo "       runtime-rollback.yml depends on this label to resolve target digests." >&2
+  exit 1
+fi
+echo "smoke-test: revision label shape OK (40-hex)"
+
 # ---- (d.5) safe.directory bake-in check (#199) ----------------------------
 # Verify CVE-2022-24765 / safe.directory exemption is baked into /etc/gitconfig
 # so git operations succeed inside the container regardless of UID drift between
