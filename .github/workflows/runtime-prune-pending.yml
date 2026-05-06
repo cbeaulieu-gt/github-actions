@@ -112,15 +112,20 @@ jobs:
               ;;
           esac
 
-          # Schedule always runs live — it is a maintenance cron, not a preview.
-          # workflow_dispatch honors the caller's input.
-          if [ "$EVENT_NAME" = "schedule" ]; then
-            echo "dry_run=false" >> "$GITHUB_OUTPUT"
-            echo "Schedule trigger — forcing live-delete (input='${RAW_DRY_RUN}', normalized='${NORMALIZED}', overridden=false)"
-          else
-            echo "dry_run=${NORMALIZED}" >> "$GITHUB_OUTPUT"
-            echo "${EVENT_NAME} trigger — dry_run=${NORMALIZED} (raw input='${RAW_DRY_RUN}')"
-          fi
+          # Both triggers honor dry_run with default 'true'. For workflow_dispatch
+          # the caller may pass dry_run=false explicitly. For schedule, inputs.dry_run
+          # is empty (no inputs on a cron firing), so it falls into the empty-default
+          # branch above and stays at 'true'.
+          #
+          # Why schedule defaults to dry-run: the protection-invariant filter
+          # (40-hex tag = skip) is correctly written, but it has no live test
+          # coverage yet. Until several cron firings have shown clean dry-run
+          # reports with zero false positives, an unattended cron that deletes
+          # is too risky vs. a cron that reports. After 4+ clean weekly reports,
+          # flip the default to 'false' (or change the schedule branch behavior)
+          # as a follow-up hardening — tracked informally; revisit after Phase 7.
+          echo "dry_run=${NORMALIZED}" >> "$GITHUB_OUTPUT"
+          echo "${EVENT_NAME} trigger — dry_run=${NORMALIZED} (raw input='${RAW_DRY_RUN}')"
 
       - name: Delete (or dry-run log)
         env:
