@@ -169,19 +169,42 @@ jobs:
           sudo chmod +x /usr/local/bin/yq
 
       - name: Validate target digests via inventory-match (Step 6.3.5b)
+        env:
+          SMOKE_UID: ${{ steps.uid.outputs.uid }}
         run: |
           set -euo pipefail
           # Rolled-back digests must satisfy each overlay's expected.yaml
           # inventory contract — same check STAGE 4-overlay smoke runs at
           # build time. Catches rollback targets that were valid when built
           # but no longer satisfy current expectations.
-          chmod +x runtime/scripts/inventory-match.sh
+          #
+          # IMPORTANT: inventory-match.sh expects a LOCAL JSON FILE (output of
+          # enumerate-persona.sh), not an image URL. The broken original call
+          # passed the image URL as $1, causing immediate ERROR enumeration_json_not_found.
+          # Fix (#213): enumerate first into a temp file, then pass that file.
+          chmod +x runtime/scripts/inventory-match.sh runtime/scripts/enumerate-persona.sh
           for ov in review fix explain; do
             upper=$(echo "$ov" | tr '[:lower:]' '[:upper:]')
             eval "DIGEST=\${${upper}_DIGEST}"
+            IMAGE_URL="ghcr.io/glitchwerks/claude-runtime-${ov}@sha256:${DIGEST}"
+            ENUM_OUT=$(mktemp)
+            enum_rc=0
+            IMAGE_REF="$IMAGE_URL" SMOKE_UID="$SMOKE_UID" \
+              bash runtime/scripts/enumerate-persona.sh "$ENUM_OUT" || enum_rc=$?
+            if [ "$enum_rc" -ne 0 ]; then
+              echo "::error::enumerate-persona failed for overlay $ov (image=$IMAGE_URL)" >&2
+              rm -f "$ENUM_OUT"
+              exit "$enum_rc"
+            fi
+            match_rc=0
             bash runtime/scripts/inventory-match.sh \
-              "ghcr.io/glitchwerks/claude-runtime-${ov}@sha256:${DIGEST}" \
-              "runtime/overlays/${ov}/expected.yaml"
+              "$ENUM_OUT" \
+              "runtime/overlays/${ov}/expected.yaml" || match_rc=$?
+            rm -f "$ENUM_OUT"
+            if [ "$match_rc" -ne 0 ]; then
+              echo "::error::inventory-match failed for overlay $ov (image=$IMAGE_URL)" >&2
+              exit "$match_rc"
+            fi
           done
 
       - name: Validate target digests via smoke-test (Step 6.3.5c)
