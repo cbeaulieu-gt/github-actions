@@ -4,6 +4,8 @@ Reusable GitHub Actions and workflows for Claude-powered automation — PR revie
 
 `CLAUDE_CODE_OAUTH_TOKEN` is required for all actions. Write-capable actions (those that push commits or trigger downstream workflows) additionally require `APP_ID` and `APP_PRIVATE_KEY` — credentials for a GitHub App that issues short-lived tokens at job time.
 
+**New consumer?** Start with [docs/consumer-onboarding.md](docs/consumer-onboarding.md) — an end-to-end walkthrough for wiring this library into a `glitchwerks` org repo for the first time. The reference docs below assume you have already completed the basic setup it covers.
+
 ## Actions
 
 | Action | Description | Usage pattern |

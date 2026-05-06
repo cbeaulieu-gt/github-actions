@@ -1,5 +1,7 @@
 # Examples
 
+See [docs/consumer-onboarding.md](../docs/consumer-onboarding.md) for the full walkthrough; this directory holds the drop-in templates referenced from Step 4.
+
 Drop-in caller workflows for `glitchwerks/github-actions` reusable workflows. Copy any of these to your repo's `.github/workflows/` directory, then customize.
 
 ## Workflow index
