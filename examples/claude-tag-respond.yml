@@ -1,0 +1,32 @@
+# claude-tag-respond.yml — Drop-in @claude mention responder
+#
+# Reusable workflow: glitchwerks/github-actions/.github/workflows/claude-tag-respond.yml@v2
+#
+# Prerequisites:
+#   - GitHub App installed on this repo with Contents r/w + Pull requests r/w
+#   - Secrets available: CLAUDE_CODE_OAUTH_TOKEN, APP_ID, APP_PRIVATE_KEY
+#   - GHCR overlay packages accessible (Internal visibility or per-repo grant)
+#
+# To use: copy this file to .github/workflows/claude-tag-respond.yml, commit, push.
+
+name: Claude Tag Respond
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  packages: read
+
+jobs:
+  respond:
+    uses: glitchwerks/github-actions/.github/workflows/claude-tag-respond.yml@v2
+    secrets:
+      claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      app_id: ${{ secrets.APP_ID }}
+      app_private_key: ${{ secrets.APP_PRIVATE_KEY }}

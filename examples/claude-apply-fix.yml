@@ -1,0 +1,45 @@
+# claude-apply-fix.yml — Manual unified-diff applier via workflow_dispatch
+#
+# Reusable workflow: glitchwerks/github-actions/.github/workflows/claude-apply-fix.yml@v2
+#
+# Prerequisites:
+#   - GitHub App installed on this repo with Contents r/w + Pull requests r/w
+#   - Secrets available: APP_ID, APP_PRIVATE_KEY
+#   - GHCR overlay packages accessible (Internal visibility or per-repo grant)
+#
+# To use: copy this file to .github/workflows/claude-apply-fix.yml, commit, push.
+# Trigger via the Actions tab → "Claude Apply Fix" → "Run workflow".
+
+name: Claude Apply Fix
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to apply the fix to'
+        type: string
+        required: true
+      fix_diff:
+        description: 'Unified diff string'
+        type: string
+        required: true
+      fix_description:
+        description: 'Commit message'
+        type: string
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  packages: read
+
+jobs:
+  apply:
+    uses: glitchwerks/github-actions/.github/workflows/claude-apply-fix.yml@v2
+    with:
+      pr_number: ${{ inputs.pr_number }}
+      fix_diff: ${{ inputs.fix_diff }}
+      fix_description: ${{ inputs.fix_description }}
+    secrets:
+      app_id: ${{ secrets.APP_ID }}
+      app_private_key: ${{ secrets.APP_PRIVATE_KEY }}

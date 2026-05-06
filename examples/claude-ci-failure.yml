@@ -1,0 +1,35 @@
+# claude-ci-failure.yml — CI failure diagnosis triggered via workflow_run
+#
+# Reusable workflow: glitchwerks/github-actions/.github/workflows/claude-ci-failure.yml@v2
+#
+# Prerequisites:
+#   - GitHub App installed on this repo with Contents r/w + Pull requests r/w
+#   - Secrets available: CLAUDE_CODE_OAUTH_TOKEN, APP_ID, APP_PRIVATE_KEY
+#   - GHCR overlay packages accessible (Internal visibility or per-repo grant)
+#
+# To use: copy this file to .github/workflows/claude-ci-failure.yml, commit, push.
+# IMPORTANT: Change `workflows: ["CI"]` below to match your CI workflow's `name:` field.
+
+name: Claude CI Failure Diagnosis
+
+on:
+  workflow_run:
+    workflows: ["CI"]  # change this to your CI workflow's name
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  packages: read
+
+jobs:
+  diagnose:
+    if: github.event.workflow_run.conclusion == 'failure'
+    uses: glitchwerks/github-actions/.github/workflows/claude-ci-failure.yml@v2
+    with:
+      pr_number: ${{ github.event.workflow_run.pull_requests[0].number }}
+      run_id: ${{ github.event.workflow_run.id }}
+    secrets:
+      claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      app_id: ${{ secrets.APP_ID }}
+      app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
