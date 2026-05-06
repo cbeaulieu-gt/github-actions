@@ -81,15 +81,20 @@ jobs:
           # Defense-in-depth: the rollback PR's reviewer-checklist asks the
           # human to confirm TARGET appears in promote history; this step
           # automates that check so an operator typo or invented pubsha is
-          # caught before the rollback PR opens. The matched-line is the
-          # squash-merge commit produced by STAGE 5 (whose subject embeds
-          # `auto/runtime-promote-<TARGET>` per the commit-message template
-          # in runtime-build.yml's STAGE 5 step "Open digest-bump PR").
-          if ! git -C "$GITHUB_WORKSPACE" log --grep="auto/runtime-promote-${TARGET}" main --format=%H | head -n1 | grep -q .; then
-            echo "::error::target_pubsha $TARGET does not appear in promote history (no commit on main matches 'auto/runtime-promote-${TARGET}'). Either the pubsha is invalid or the promote was reverted before merging." >&2
+          # caught before the rollback PR opens.
+          #
+          # What to grep for: STAGE 5 (runtime-build.yml step "Open digest-bump
+          # PR") opens a PR titled `promote: runtime images @<github.sha>`.
+          # When that PR squash-merges, the merge commit on main inherits the
+          # PR title as its subject, so `git log --grep="promote: runtime
+          # images @${TARGET}"` finds it. Note: the branch name
+          # `auto/runtime-promote-<sha>` does NOT appear in any commit
+          # message — it only exists as a git ref.
+          if ! git -C "$GITHUB_WORKSPACE" log --grep="promote: runtime images @${TARGET}" origin/main --format=%H | head -n1 | grep -q .; then
+            echo "::error::target_pubsha $TARGET does not appear in promote history on origin/main (no merge commit subject matches 'promote: runtime images @${TARGET}'). Either the pubsha is invalid, the promote PR never merged, or the PR was merged with a non-default merge method that didn't preserve the title as the commit subject." >&2
             exit 1
           fi
-          echo "target_pubsha appears in promote history: OK"
+          echo "target_pubsha appears in promote history: OK (matched merge commit on origin/main)"
 
       - name: Login to GHCR (read)
         uses: docker/login-action@v4

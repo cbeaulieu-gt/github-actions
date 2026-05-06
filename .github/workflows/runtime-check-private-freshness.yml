@@ -194,18 +194,28 @@ jobs:
             | head -n1)
 
           # Build commit summary (no-merges, first 30 lines for readability).
+          # SC2016 disabled: the git --pretty format string contains literal
+          # backticks intended for Markdown rendering, not shell command
+          # substitution. Single quotes preserve them as-is.
           mapfile -t PATHS < /tmp/import-paths.txt
+          # shellcheck disable=SC2016
           COMMIT_LOG=$(git -C /tmp/cc log --no-merges \
             --pretty=format:'- `%h` %s' \
             "${PINNED_SHA}..${MAIN_SHA}" -- "${PATHS[@]}" 2>/dev/null \
             | head -30 || true)
           [ -z "$COMMIT_LOG" ] && COMMIT_LOG="_(no individual commits listed — may be a merge-only range)_"
 
+          # shellcheck disable=SC2016
           PATH_LIST=$(awk '{print "- `" $0 "`"}' /tmp/import-paths.txt)
 
           # Build body via printf — heredocs leak leading whitespace as
           # Markdown indented-code-blocks, which would break every table and
           # list below. printf with explicit '\n' is whitespace-precise.
+          # SC2016 disabled on the whole brace block: the printf format
+          # strings contain literal Markdown backticks (intentional), not
+          # shell command substitutions. Disabling at the compound-command
+          # level avoids 9 individual disables.
+          # shellcheck disable=SC2016
           {
             printf 'Automated freshness check from `runtime-check-private-freshness.yml`.\n\n'
             printf '### Summary\n\n'
