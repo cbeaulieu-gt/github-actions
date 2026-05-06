@@ -52,6 +52,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  packages: read
 
 jobs:
   review:
@@ -86,6 +87,7 @@ permissions:
   contents: write
   issues: write
   pull-requests: write
+  packages: read
 
 jobs:
   respond:
