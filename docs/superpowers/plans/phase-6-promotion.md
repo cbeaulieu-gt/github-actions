@@ -338,6 +338,13 @@ These steps gather inputs the plan can't hard-code; run them before Task 6.1.
 - [ ] **Step 6.2.6: Record the dry-run PR number in the Phase 6 PR body.**
   When opening the Phase 6 PR (Task 6.10), include `Verified STAGE 5 dry-run via PR #<N> (closed without merge)`.
 
+  **Outcome (2026-05-05):** Dry-run PR was **#207** (closed without merge). Reached via two retry rounds:
+  1. Run [25410793517](https://github.com/glitchwerks/github-actions/actions/runs/25410793517) — STAGE 5 push rejected; App `claude-action-runner` lacked `workflows: write` permission.
+  2. After org admin granted the scope, run [25411207266](https://github.com/glitchwerks/github-actions/actions/runs/25411207266) — same rejection (installation perm propagation lag).
+  3. After installation perm refresh (verified by `verify-app-secrets.yml` probe run [25411361926](https://github.com/glitchwerks/github-actions/actions/runs/25411361926)), run [25411378215](https://github.com/glitchwerks/github-actions/actions/runs/25411378215) — STAGE 5 succeeded, opened PR #207. Diff scope, line count, per-overlay substitution, body, and labels all verified per Step 6.2.4. Tracking issue [#205](https://github.com/glitchwerks/github-actions/issues/205) closed.
+
+  Phase 6 PR body line: `Verified STAGE 5 dry-run via PR #207 (closed without merge; see #205 for App-permission resolution).`
+
 ---
 
 ## Task 6.3: Author runtime/rollback.yml
