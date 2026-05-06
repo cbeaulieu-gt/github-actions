@@ -1,0 +1,147 @@
+name: runtime-prune-pending
+
+# Prunes GHCR package versions tagged pending-* that are older than 14 days.
+# A version that also carries a 40-hex pubsha tag is a promoted, immutable
+# version (spec §11.4) and is NEVER pruned, even if it still has a pending-*
+# tag. The pubsha tag is the protection signal.
+#
+# Triggers:
+#   schedule  — weekly, Monday 09:00 UTC (distinct from overlay-smoke at 06:17)
+#   workflow_dispatch — defaults to dry_run=true (report only, no deletes)
+#
+# Issue: #144
+
+on:
+  schedule:
+    # Weekly Monday 09:00 UTC — off-peak, distinct from overlay-smoke (06:17 daily).
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Log candidates only; do not delete.'
+        required: false
+        default: 'true'
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  prune:
+    name: Prune pending-* tags older than 14 days
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - claude-runtime-base
+          - claude-runtime-review
+          - claude-runtime-fix
+          - claude-runtime-explain
+    steps:
+      - name: List package versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # shellcheck disable=SC2016
+        run: |
+          set -euo pipefail
+          gh api --paginate \
+            "/orgs/glitchwerks/packages/container/${{ matrix.package }}/versions" \
+            > /tmp/versions.json
+          count=$(jq 'length' /tmp/versions.json)
+          echo "Total versions for ${{ matrix.package }}: $count"
+
+      - name: Filter pending-* candidates older than 14 days
+        # shellcheck disable=SC2016
+        run: |
+          set -euo pipefail
+          NOW=$(date +%s)
+          CUTOFF_SECS=$((NOW - 14 * 86400))
+
+          # PROTECTION INVARIANT (spec §11.4):
+          #   A version whose tag list contains any 40-char lowercase-hex string is
+          #   a promoted version with an immutable pubsha tag — NEVER prune it,
+          #   even when it also carries a pending-* tag.
+          #   Filter: keep only versions that:
+          #     1. have at least one pending-* tag
+          #     2. have NO 40-char hex tag (no pubsha promote tag)
+          #     3. created_at is older than 14 days
+          jq --argjson cutoff "$CUTOFF_SECS" '
+            [.[]
+             | . as $v
+             | ($v.metadata.container.tags // []) as $tags
+             | select(
+                 # 1. Must have a pending-* tag
+                 ($tags | map(startswith("pending-")) | any)
+                 # 2. Must NOT have a 40-char hex pubsha promote tag
+                 and ($tags | map(test("^[a-f0-9]{40}$")) | any | not)
+               )
+             | select(
+                 # 3. created_at must be older than 14 days
+                 ($v.created_at | sub("\\.[0-9]+Z$"; "Z") | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime)
+                 < $cutoff
+               )
+             | {id: $v.id, name: $v.name, created_at: $v.created_at, tags: $tags}
+            ]
+          ' /tmp/versions.json > /tmp/candidates.json
+
+          count=$(jq 'length' /tmp/candidates.json)
+          echo "Candidates for deletion (pending-* only, no pubsha tag, older than 14d): $count"
+          jq -r '.[] | "  id=\(.id) created=\(.created_at) tags=\(.tags | join(","))"' /tmp/candidates.json
+
+      - name: Resolve effective dry-run mode
+        id: mode
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RAW_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          # Normalize input. Do NOT use `inputs.dry_run || 'true'` — in GHA
+          # expressions `false || 'true'` evaluates to the string 'true', silently
+          # reversing an explicit dry_run=false. Normalize via shell env var instead.
+          case "${RAW_DRY_RUN:-}" in
+            true|"")  NORMALIZED=true ;;
+            false)    NORMALIZED=false ;;
+            *)
+              echo "::error::Invalid inputs.dry_run value: '${RAW_DRY_RUN}'. Must be 'true', 'false', or empty."
+              exit 1
+              ;;
+          esac
+
+          # Schedule always runs live — it is a maintenance cron, not a preview.
+          # workflow_dispatch honors the caller's input.
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+            echo "Schedule trigger — forcing live-delete (input='${RAW_DRY_RUN}', normalized='${NORMALIZED}', overridden=false)"
+          else
+            echo "dry_run=${NORMALIZED}" >> "$GITHUB_OUTPUT"
+            echo "${EVENT_NAME} trigger — dry_run=${NORMALIZED} (raw input='${RAW_DRY_RUN}')"
+          fi
+
+      - name: Delete (or dry-run log)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ steps.mode.outputs.dry_run }}
+        # shellcheck disable=SC2016
+        run: |
+          set -euo pipefail
+          count=$(jq 'length' /tmp/candidates.json)
+          if [ "$count" -eq 0 ]; then
+            echo "Nothing to prune for ${{ matrix.package }}."
+            exit 0
+          fi
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "DRY_RUN=true — would delete $count version(s) for ${{ matrix.package }}:"
+            jq -r '.[] | "  id=\(.id) created=\(.created_at) tags=\(.tags | join(","))"' /tmp/candidates.json
+            exit 0
+          fi
+          jq -r '.[].id' /tmp/candidates.json | while read -r vid; do
+            echo "Deleting ${{ matrix.package }} version $vid"
+            gh api -X DELETE \
+              "/orgs/glitchwerks/packages/container/${{ matrix.package }}/versions/$vid"
+          done
+          echo "Deleted $count version(s) for ${{ matrix.package }}."
