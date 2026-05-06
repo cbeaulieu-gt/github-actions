@@ -1,8 +1,8 @@
 # github-actions
 
-Reusable GitHub Actions for Claude-powered automation. This repository provides two actions — one for automated PR reviews and one for responding to `@claude` mentions in comments — built on top of [`anthropics/claude-code-action`](https://github.com/anthropics/claude-code-action).
+Reusable GitHub Actions and workflows for Claude-powered automation — PR review, `@claude` mention responses, lint-failure diagnosis, CI-failure diagnosis, and manual fix application — built on top of [`anthropics/claude-code-action`](https://github.com/anthropics/claude-code-action).
 
-All actions authenticate using a `CLAUDE_CODE_OAUTH_TOKEN` secret.
+`CLAUDE_CODE_OAUTH_TOKEN` is required for all actions. Write-capable actions (those that push commits or trigger downstream workflows) additionally require `APP_ID` and `APP_PRIVATE_KEY` — credentials for a GitHub App that issues short-lived tokens at job time.
 
 ## Actions
 
@@ -11,6 +11,7 @@ All actions authenticate using a `CLAUDE_CODE_OAUTH_TOKEN` secret.
 | `pr-review` | Claude reviews a PR for code quality, security, performance, test coverage, and docs | Composite action or reusable workflow |
 | `tag-claude` | Claude responds to `@claude` mentions in issue and PR comments | Composite action or reusable workflow |
 | `lint-failure` | Claude diagnoses lint failures on a PR and optionally commits a fix | Composite action or reusable workflow |
+| `apply-fix` | Validates and applies a unified diff to a PR branch (manual or via auto-fix) | Composite action or reusable workflow |
 
 ---
 
@@ -18,14 +19,17 @@ All actions authenticate using a `CLAUDE_CODE_OAUTH_TOKEN` secret.
 
 > **Critical:** GitHub ignores `permissions:` declared at the job level when a job calls a reusable workflow (`uses:`). You **must** declare permissions at the **workflow level** (top-level `permissions:` key, outside of `jobs:`). Job-level permissions are silently ignored in this context, which can cause cryptic 403 errors or missing write access at runtime.
 
+> **Container pull permission:** All Phase 5 reusable workflows run inside container-pinned overlay images pulled from `ghcr.io/glitchwerks/claude-runtime-{review,fix,explain}`. The runner does an implicit `docker pull` before the job's first step executes, authenticated with `GITHUB_TOKEN`. `packages: read` **must** be present in the workflow-level permissions block — without it the pull fails with `manifest unknown` (an authorization-masked error that looks like the image does not exist). See issue #192 for the original diagnosis.
+
 The table below shows the minimum required permissions for each consumer workflow file. Copy the exact block shown into the top level of your workflow (after `on:`, before `jobs:`).
 
 | Workflow | Trigger | Required `permissions:` block |
 |---|---|---|
-| PR Review | `pull_request` | `contents: read`<br>`pull-requests: write` |
-| Tag Claude | `issue_comment` + `pull_request_review_comment` | `contents: write`<br>`issues: write`<br>`pull-requests: write` |
-| Claude Lint Fix | `pull_request` (via `needs: [lint]`, `if: failure()`) | `contents: write`<br>`pull-requests: write`<br>`actions: read` |
-| CI Failure Diagnosis | `workflow_run` | `contents: write`<br>`pull-requests: write` |
+| PR Review | `pull_request` | `contents: read`<br>`pull-requests: write`<br>`packages: read` |
+| Tag Claude | `issue_comment` + `pull_request_review_comment` | `contents: write`<br>`issues: write`<br>`pull-requests: write`<br>`packages: read` |
+| Claude Lint Failure | `pull_request` (via `needs: [lint]`, `if: failure()`) | `contents: write`<br>`pull-requests: write`<br>`actions: read`<br>`packages: read` |
+| CI Failure Diagnosis | `workflow_run` | `contents: write`<br>`pull-requests: write`<br>`packages: read` |
+| Apply Fix | `workflow_dispatch` | `contents: write`<br>`pull-requests: write`<br>`packages: read` |
 
 ---
 
@@ -48,6 +52,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  packages: read
 
 jobs:
   review:
@@ -82,6 +87,7 @@ permissions:
   contents: write
   issues: write
   pull-requests: write
+  packages: read
 
 jobs:
   respond:
@@ -222,6 +228,39 @@ For the `claude-tag-respond.yml` flow, the `route` job invokes `claude-command-r
 
 ---
 
+## GHCR package access for org-wide consumers
+
+The Phase 5 reusable workflows pull overlay images from `ghcr.io/glitchwerks/claude-runtime-{review,fix,explain}` at job startup. Consumer caller workflows must be able to pull these images. There are two patterns depending on where the consumer repo lives.
+
+### Intra-org consumers (recommended)
+
+Set each package's visibility to **Internal** via:
+
+```
+https://github.com/orgs/<org>/packages/container/<package-name>/settings
+```
+
+Select "Change package visibility" → "Internal". This grants every repository owned by the `glitchwerks` org read access to the package using the ambient `GITHUB_TOKEN` — no per-repo bookkeeping needed. Repeat for all three packages: `claude-runtime-review`, `claude-runtime-fix`, `claude-runtime-explain`.
+
+### External (cross-org) consumers
+
+Use the per-repo grant: package settings → "Manage Actions access" → add the consumer repo with role **Read**. This must be done for each of the three packages.
+
+### Required in all cases: `packages: read`
+
+Regardless of visibility setting, the consumer's caller workflow **must** declare `packages: read` at the workflow level:
+
+```yaml
+permissions:
+  contents: read          # or write, as required
+  pull-requests: write    # as required
+  packages: read          # required for GHCR image pull
+```
+
+The visibility setting is a necessary condition (it allows the pull in principle), but `packages: read` in the workflow permissions is also necessary (it authorizes the implicit `docker pull` that runs before any step). An implicit `docker login` step in the workflow body cannot substitute for the missing permission — the pull happens before any step runs. Omitting `packages: read` results in a `manifest unknown` error that looks like the image is absent rather than forbidden. See issue #192 for the original diagnosis.
+
+---
+
 ## CI Failure Diagnosis
 
 The `ci-failure` workflow watches for failed runs of a workflow named `CI` and automatically diagnoses the failure using Claude. When confidence is high it can also apply the fix directly to the PR branch — no manual intervention needed.
@@ -273,10 +312,11 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  packages: read
 
 jobs:
   diagnose:
-    uses: glitchwerks/github-actions/.github/workflows/ci-failure.yaml@v2
+    uses: glitchwerks/github-actions/.github/workflows/claude-ci-failure.yml@v2
     secrets:
       claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       app_id: ${{ secrets.APP_ID }}
@@ -321,6 +361,7 @@ permissions:
   contents: write
   pull-requests: write
   actions: read
+  packages: read
 
 jobs:
   lint:
@@ -332,7 +373,7 @@ jobs:
   notify-claude:
     needs: [lint]
     if: failure()
-    uses: glitchwerks/github-actions/.github/workflows/claude-lint-fix.yml@v2
+    uses: glitchwerks/github-actions/.github/workflows/claude-lint-failure.yml@v2
     with:
       pr_number: ${{ github.event.pull_request.number }}
       run_id: ${{ github.run_id }}
@@ -388,7 +429,7 @@ The `apply-fix` workflow (and its backing composite action at `apply-fix/`) chec
 
 ```yaml
 # Trigger via GitHub UI or gh CLI:
-gh workflow run apply-fix.yml \
+gh workflow run claude-apply-fix.yml \
   -f pr_number=42 \
   -f fix_description="Fix missing null check in auth handler" \
   -f fix_diff="$(cat my.patch)"
