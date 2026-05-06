@@ -775,3 +775,157 @@ jobs:
           bash runtime/scripts/overlay-smoke.sh \
             "ghcr.io/glitchwerks/claude-runtime-${{ matrix.overlay }}:pending-${{ github.sha }}" \
             "${{ matrix.overlay }}"
+
+  # -------------------------------------------------------------------------
+  # STAGE 5 — promote (digest-bump PR), NEW in Phase 6 (#144)
+  # -------------------------------------------------------------------------
+  # Per spec §6.2 STAGE 5 + §9.3. Only one of (push to main / workflow_dispatch)
+  # may open a promote PR — PR validation must NOT cascade. The single commit
+  # produced bumps all 7 @sha256: occurrences across 5 reusable workflows
+  # atomically; consumers see either the new set or the old set, never a mix.
+  # cancel-in-progress: false is deliberate — an in-flight promote completes
+  # before the next one starts so each promote PR opens against a fully-bumped
+  # baseline rather than partial state.
+  stage-5-promote:
+    name: STAGE 5 — promote (digest-bump PR)
+    needs: [stage-2, stage-3-collect, stage-4-base, stage-4-overlay]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: stage-5-promote
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      packages: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Resolve App token
+        id: token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3  # v3.1.1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Capture base digest (strip prefix + validate)
+        env:
+          BASE_DIGEST_RAW: ${{ needs.stage-2.outputs.base_digest }}
+        run: |
+          set -euo pipefail
+          BASE_DIGEST="${BASE_DIGEST_RAW#sha256:}"
+          if [ "${#BASE_DIGEST}" -ne 64 ] || [ -n "${BASE_DIGEST//[0-9a-fA-F]/}" ]; then
+            echo "ERROR base_digest_invalid value=$BASE_DIGEST" >&2
+            exit 1
+          fi
+          echo "BASE_DIGEST=$BASE_DIGEST" >> "$GITHUB_ENV"
+
+      - name: Capture overlay digests (strip prefix + validate)
+        env:
+          REVIEW_RAW: ${{ needs.stage-3-collect.outputs.digest_review }}
+          FIX_RAW: ${{ needs.stage-3-collect.outputs.digest_fix }}
+          EXPLAIN_RAW: ${{ needs.stage-3-collect.outputs.digest_explain }}
+        run: |
+          set -euo pipefail
+          for pair in "REVIEW:$REVIEW_RAW" "FIX:$FIX_RAW" "EXPLAIN:$EXPLAIN_RAW"; do
+            name="${pair%%:*}"; raw="${pair#*:}"
+            digest="${raw#sha256:}"
+            if [ "${#digest}" -ne 64 ] || [ -n "${digest//[0-9a-fA-F]/}" ]; then
+              echo "ERROR overlay_digest_invalid name=$name value=$digest" >&2
+              exit 1
+            fi
+            echo "${name}_DIGEST=$digest" >> "$GITHUB_ENV"
+          done
+
+      - name: Login to GHCR (read)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Capture OCI labels for PR body
+        run: |
+          set -euo pipefail
+          : > /tmp/oci-labels.md
+          for pair in "base:$BASE_DIGEST" "review:$REVIEW_DIGEST" "fix:$FIX_DIGEST" "explain:$EXPLAIN_DIGEST"; do
+            name="${pair%%:*}"; digest="${pair#*:}"
+            ref="ghcr.io/glitchwerks/claude-runtime-${name}@sha256:${digest}"
+            docker pull "$ref" >/dev/null
+            private_sha=$(docker inspect "$ref" --format '{{ index .Config.Labels "dev.glitchwerks.ci.private_sha" }}')
+            marketplace_sha=$(docker inspect "$ref" --format '{{ index .Config.Labels "dev.glitchwerks.ci.marketplace_sha" }}')
+            cli_version=$(docker inspect "$ref" --format '{{ index .Config.Labels "dev.glitchwerks.ci.cli_version" }}')
+            {
+              echo "- **${name}** \`@sha256:${digest:0:12}…\`"
+              echo "  - private_sha: \`${private_sha}\`"
+              echo "  - marketplace_sha: \`${marketplace_sha}\`"
+              echo "  - cli_version: \`${cli_version}\`"
+            } >> /tmp/oci-labels.md
+          done
+
+      - name: Rewrite digest pins
+        # shellcheck disable=SC2016
+        run: |
+          set -euo pipefail
+          FILES=(
+            .github/workflows/claude-pr-review.yml
+            .github/workflows/claude-apply-fix.yml
+            .github/workflows/claude-lint-failure.yml
+            .github/workflows/claude-ci-failure.yml
+            .github/workflows/claude-tag-respond.yml
+          )
+          for f in "${FILES[@]}"; do
+            sed -i -E \
+              -e "s|claude-runtime-review@sha256:[a-f0-9]{64}|claude-runtime-review@sha256:${REVIEW_DIGEST}|g" \
+              -e "s|claude-runtime-fix@sha256:[a-f0-9]{64}|claude-runtime-fix@sha256:${FIX_DIGEST}|g" \
+              -e "s|claude-runtime-explain@sha256:[a-f0-9]{64}|claude-runtime-explain@sha256:${EXPLAIN_DIGEST}|g" \
+              "$f"
+          done
+          # Verify exactly 7 occurrences land:
+          count=$(grep -E "claude-runtime-(review|fix|explain)@sha256:[a-f0-9]{64}" "${FILES[@]}" | wc -l)
+          if [ "$count" -ne 7 ]; then
+            echo "ERROR digest_count_mismatch expected=7 actual=$count" >&2
+            exit 1
+          fi
+          echo "digest pin rewrite: $count references updated"
+
+      - name: Build PR body
+        run: |
+          set -euo pipefail
+          {
+            echo "## Runtime image promotion @${{ github.sha }}"
+            echo
+            echo "Atomic digest bump across 5 reusable workflows (7 \`@sha256:\` occurrences) per spec §6.2 STAGE 5. Merging this PR is the promote."
+            echo
+            echo "### Promoted images"
+            echo
+            cat /tmp/oci-labels.md
+            echo
+            echo "### Rollback"
+            echo
+            echo "To revert this promote: \`git revert <merge-commit>\` once merged, OR run \`runtime-rollback.yml\` with the prior \`pubsha\` (visible in \`git log\` of the prior \`auto/runtime-promote-*\` PRs)."
+            echo
+            echo "🤖 _Generated by Claude Code on behalf of @cbeaulieu-gt_"
+          } > /tmp/pr-body.md
+
+      - name: Open digest-bump PR
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
+        with:
+          token: ${{ steps.token.outputs.token }}
+          commit-message: |
+            promote: runtime images @${{ github.sha }}
+
+            Atomic digest bump across 5 reusable workflows (7 occurrences).
+            See PR body for OCI labels.
+          branch: auto/runtime-promote-${{ github.sha }}
+          delete-branch: true
+          title: "promote: runtime images @${{ github.sha }}"
+          body-path: /tmp/pr-body.md
+          labels: |
+            automation
+            ci
+            runtime-promote
