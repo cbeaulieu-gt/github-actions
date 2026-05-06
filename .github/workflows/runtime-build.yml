@@ -885,13 +885,16 @@ jobs:
               -e "s|claude-runtime-explain@sha256:[a-f0-9]{64}|claude-runtime-explain@sha256:${EXPLAIN_DIGEST}|g" \
               "$f"
           done
-          # Verify exactly 7 occurrences land:
-          count=$(grep -E "claude-runtime-(review|fix|explain)@sha256:[a-f0-9]{64}" "${FILES[@]}" | wc -l)
-          if [ "$count" -ne 7 ]; then
-            echo "ERROR digest_count_mismatch expected=7 actual=$count" >&2
+          # Verify exactly 7 occurrences land. SC2126: grep -c instead of grep|wc -l;
+          # but on multiple files grep -c prints <file>:<count> per file, so sum
+          # them with awk to get the total.
+          total=$(grep -cE "claude-runtime-(review|fix|explain)@sha256:[a-f0-9]{64}" "${FILES[@]}" \
+            | awk -F: '{s+=$NF} END {print s+0}')
+          if [ "$total" -ne 7 ]; then
+            echo "ERROR digest_count_mismatch expected=7 actual=$total" >&2
             exit 1
           fi
-          echo "digest pin rewrite: $count references updated"
+          echo "digest pin rewrite: $total references updated"
 
       - name: Build PR body
         run: |

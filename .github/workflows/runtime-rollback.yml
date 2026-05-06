@@ -50,7 +50,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          fetch-depth: 1
+          # fetch-depth: 0 needed for the promote-history check below to walk
+          # main's commits looking for an `auto/runtime-promote-<TARGET>` commit
+          # (#209 review item #6).
+          fetch-depth: 0
 
       - name: Resolve App token
         id: token
@@ -69,6 +72,24 @@ jobs:
             exit 1
           fi
           echo "target_pubsha shape OK: $TARGET"
+
+      - name: Verify target_pubsha appears in promote history (#209 #6)
+        env:
+          TARGET: ${{ inputs.target_pubsha }}
+        run: |
+          set -euo pipefail
+          # Defense-in-depth: the rollback PR's reviewer-checklist asks the
+          # human to confirm TARGET appears in promote history; this step
+          # automates that check so an operator typo or invented pubsha is
+          # caught before the rollback PR opens. The matched-line is the
+          # squash-merge commit produced by STAGE 5 (whose subject embeds
+          # `auto/runtime-promote-<TARGET>` per the commit-message template
+          # in runtime-build.yml's STAGE 5 step "Open digest-bump PR").
+          if ! git -C "$GITHUB_WORKSPACE" log --grep="auto/runtime-promote-${TARGET}" main --format=%H | head -n1 | grep -q .; then
+            echo "::error::target_pubsha $TARGET does not appear in promote history (no commit on main matches 'auto/runtime-promote-${TARGET}'). Either the pubsha is invalid or the promote was reverted before merging." >&2
+            exit 1
+          fi
+          echo "target_pubsha appears in promote history: OK"
 
       - name: Login to GHCR (read)
         uses: docker/login-action@v4
@@ -96,7 +117,7 @@ jobs:
               echo "::error::resolved digest invalid for $ov: '$digest'" >&2
               exit 1
             fi
-            upper=$(echo "$ov" | tr a-z A-Z)
+            upper=$(echo "$ov" | tr '[:lower:]' '[:upper:]')
             echo "${upper}_DIGEST=$digest" >> "$GITHUB_ENV"
             echo "  rollback target $ov -> @sha256:${digest:0:12}…"
           done
@@ -112,7 +133,7 @@ jobs:
           # org.opencontainers.image.revision (set by --build-arg PUB_SHA in
           # the Dockerfile LABEL block, lines 22-29). Catches retag drift.
           for ov in review fix explain; do
-            upper=$(echo "$ov" | tr a-z A-Z)
+            upper=$(echo "$ov" | tr '[:lower:]' '[:upper:]')
             eval "DIGEST=\${${upper}_DIGEST}"
             label=$(docker inspect \
               --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
@@ -128,11 +149,18 @@ jobs:
         id: uid
         run: echo "uid=$(bash runtime/scripts/capture-runner-uid.sh)" >> "$GITHUB_OUTPUT"
 
-      - name: Install yq (inventory-match prereq)
+      - name: Install yq (inventory-match prereq, SHA256-verified)
         run: |
           set -euo pipefail
+          # SHA256 verification (#209 review item #1 Critical): refuse to install
+          # if the downloaded binary doesn't match the expected hash. Verified
+          # 2026-05-05 against the official checksums file at
+          # https://github.com/mikefarah/yq/releases/download/v4.44.3/checksums
+          # (SHA-256 column, per checksums_hashes_order).
+          YQ_SHA256="a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7"
           sudo curl -fsSL -o /usr/local/bin/yq \
             https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          echo "${YQ_SHA256}  /usr/local/bin/yq" | sha256sum -c -
           sudo chmod +x /usr/local/bin/yq
 
       - name: Validate target digests via inventory-match (Step 6.3.5b)
@@ -144,7 +172,7 @@ jobs:
           # but no longer satisfy current expectations.
           chmod +x runtime/scripts/inventory-match.sh
           for ov in review fix explain; do
-            upper=$(echo "$ov" | tr a-z A-Z)
+            upper=$(echo "$ov" | tr '[:lower:]' '[:upper:]')
             eval "DIGEST=\${${upper}_DIGEST}"
             bash runtime/scripts/inventory-match.sh \
               "ghcr.io/glitchwerks/claude-runtime-${ov}@sha256:${DIGEST}" \
@@ -163,7 +191,7 @@ jobs:
           # validated to the same standard as a fresh build.
           chmod +x runtime/scripts/smoke-test.sh runtime/scripts/enumerate-persona.sh
           for ov in review fix explain; do
-            upper=$(echo "$ov" | tr a-z A-Z)
+            upper=$(echo "$ov" | tr '[:lower:]' '[:upper:]')
             eval "DIGEST=\${${upper}_DIGEST}"
             EXPECTED_FILE="runtime/overlays/${ov}/expected.yaml" \
               bash runtime/scripts/smoke-test.sh \
@@ -188,13 +216,15 @@ jobs:
               -e "s|claude-runtime-explain@sha256:[a-f0-9]{64}|claude-runtime-explain@sha256:${EXPLAIN_DIGEST}|g" \
               "$f"
           done
-          # Verify exactly 7 occurrences land:
-          count=$(grep -E "claude-runtime-(review|fix|explain)@sha256:[a-f0-9]{64}" "${FILES[@]}" | wc -l)
-          if [ "$count" -ne 7 ]; then
-            echo "::error::digest_count_mismatch expected=7 actual=$count" >&2
+          # Verify exactly 7 occurrences land. SC2126: grep -c instead of grep|wc -l;
+          # on multiple files grep -c prints <file>:<count> per file, so sum with awk.
+          total=$(grep -cE "claude-runtime-(review|fix|explain)@sha256:[a-f0-9]{64}" "${FILES[@]}" \
+            | awk -F: '{s+=$NF} END {print s+0}')
+          if [ "$total" -ne 7 ]; then
+            echo "::error::digest_count_mismatch expected=7 actual=$total" >&2
             exit 1
           fi
-          echo "rollback digest pin rewrite: $count references updated"
+          echo "rollback digest pin rewrite: $total references updated"
 
       - name: Build PR body
         env:
@@ -223,7 +253,7 @@ jobs:
             echo "### Reviewer checklist"
             echo
             echo "- [ ] Confirm \`${TARGET}\` appears in \`git log --grep='auto/runtime-promote-' main\` (i.e. it was a previously-promoted build, not an arbitrary commit)."
-            echo "- [ ] Confirm the rollback target predates a known regression and the 'differen-eyes' invariants are not weakened by reverting."
+            echo "- [ ] Confirm the rollback target predates a known regression and the 'different-eyes' invariants are not weakened by reverting."
             echo
             echo "🤖 _Generated by Claude Code on behalf of @cbeaulieu-gt_"
           } > /tmp/pr-body.md

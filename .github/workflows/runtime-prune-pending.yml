@@ -139,6 +139,18 @@ jobs:
             echo "Nothing to prune for ${{ matrix.package }}."
             exit 0
           fi
+          # #209 review item #4 High: defense-in-depth threshold. If the jq
+          # filter ever malfunctions (e.g. inverted negation) and selects every
+          # version, the threshold prevents catastrophic mass-deletion. 50 is
+          # generous — typical weekly cron should produce ≤4 candidates per
+          # package after the protection invariant filters out promote tags.
+          # Use workflow_dispatch with dry_run=true to investigate above-threshold
+          # cases manually before lifting the cap.
+          if [ "$count" -gt 50 ]; then
+            echo "::error::Prune candidate count ($count) exceeds safety threshold (50) for ${{ matrix.package }} — refusing to delete. Investigate via workflow_dispatch with dry_run=true and reduce candidates manually if intentional." >&2
+            jq -r '.[] | "  id=\(.id) created=\(.created_at) tags=\(.tags | join(","))"' /tmp/candidates.json | head -20 >&2
+            exit 1
+          fi
           if [ "$DRY_RUN" = "true" ]; then
             echo "DRY_RUN=true — would delete $count version(s) for ${{ matrix.package }}:"
             jq -r '.[] | "  id=\(.id) created=\(.created_at) tags=\(.tags | join(","))"' /tmp/candidates.json

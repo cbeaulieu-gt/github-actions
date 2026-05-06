@@ -35,11 +35,18 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install yq
+      - name: Install yq (SHA256-verified)
         run: |
           set -euo pipefail
+          # SHA256 verification (#209 review item #1 Critical): refuse to install
+          # if the binary doesn't match the upstream-published hash. Verified
+          # 2026-05-05 against the official checksums file at
+          # https://github.com/mikefarah/yq/releases/download/v4.44.3/checksums
+          # (SHA-256 column, per checksums_hashes_order).
+          YQ_SHA256="a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7"
           sudo curl -fsSL -o /usr/local/bin/yq \
             https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          echo "${YQ_SHA256}  /usr/local/bin/yq" | sha256sum -c -
           sudo chmod 0755 /usr/local/bin/yq
 
       - name: Read manifest pin and build import-path list
@@ -93,35 +100,37 @@ jobs:
       - name: Clone claude-configs at pinned ref + main
         env:
           APP_TOKEN: ${{ steps.token.outputs.token }}
-          # shellcheck disable=SC2016
           REF: ${{ steps.pin.outputs.ref }}
         run: |
           set -euo pipefail
-          : "${APP_TOKEN:?App token not set — check APP_ID/APP_PRIVATE_KEY secrets and #206 install status}"
+          # #209 review item #2 High: explicit if-check instead of `:?` — `:?`
+          # echoes the variable's value to stderr if set-but-empty, which would
+          # leak the App token in workflow logs.
+          if [ -z "${APP_TOKEN:-}" ]; then
+            echo "::error::App token not set — check APP_ID/APP_PRIVATE_KEY secrets and #206 install status" >&2
+            exit 1
+          fi
 
           git clone --depth=1 --no-tags \
             "https://x-access-token:${APP_TOKEN}@github.com/glitchwerks/claude-configs.git" \
             /tmp/cc
 
           # Fetch the pinned tag and main so both refs are local.
-          git -C /tmp/cc fetch --no-tags origin "$REF"
+          git -C /tmp/cc fetch --no-tags origin "refs/tags/${REF}:refs/tags/${REF}"
           git -C /tmp/cc fetch --no-tags origin main
 
-          PINNED_SHA=$(git -C /tmp/cc rev-parse "FETCH_HEAD" 2>/dev/null || \
-                       git -C /tmp/cc rev-list -n1 "refs/tags/$REF")
-          # Re-fetch tag explicitly for rev-parse reliability.
-          git -C /tmp/cc fetch --no-tags origin "refs/tags/${REF}:refs/tags/${REF}" 2>/dev/null || true
           PINNED_SHA=$(git -C /tmp/cc rev-list -n1 "refs/tags/${REF}")
-          git -C /tmp/cc fetch --no-tags origin main
           MAIN_SHA=$(git -C /tmp/cc rev-parse origin/main)
-
           PINNED_DATE=$(git -C /tmp/cc log -1 --format=%cI "$PINNED_SHA")
           MAIN_DATE=$(git -C /tmp/cc log -1 --format=%cI "$MAIN_SHA")
 
-          echo "PINNED_SHA=$PINNED_SHA" >> "$GITHUB_ENV"
-          echo "MAIN_SHA=$MAIN_SHA"     >> "$GITHUB_ENV"
-          echo "PINNED_DATE=$PINNED_DATE" >> "$GITHUB_ENV"
-          echo "MAIN_DATE=$MAIN_DATE"     >> "$GITHUB_ENV"
+          # SC2129 fix: combine multiple >> redirects into a single brace block.
+          {
+            echo "PINNED_SHA=$PINNED_SHA"
+            echo "MAIN_SHA=$MAIN_SHA"
+            echo "PINNED_DATE=$PINNED_DATE"
+            echo "MAIN_DATE=$MAIN_DATE"
+          } >> "$GITHUB_ENV"
           echo "Pinned: $PINNED_SHA ($PINNED_DATE)"
           echo "Main:   $MAIN_SHA ($MAIN_DATE)"
 
@@ -137,17 +146,27 @@ jobs:
           # Calendar gap in whole days.
           DAYS_GAP=$(( ( $(date -d "$MAIN_DATE" +%s) - $(date -d "$PINNED_DATE" +%s) ) / 86400 ))
 
-          echo "COMMITS_AHEAD=$COMMITS_AHEAD" >> "$GITHUB_ENV"
-          echo "DAYS_GAP=$DAYS_GAP"           >> "$GITHUB_ENV"
+          # #209 review item #7: guard against negative gap (force-push in
+          # private repo could rewind main and produce a confusing
+          # "-N days behind" issue title). Treat negative as not-stale and exit.
+          if [ "$DAYS_GAP" -lt 0 ]; then
+            echo "::warning::Pinned ref ($PINNED_DATE) is NEWER than main ($MAIN_DATE) — possible force-push or main rewind in private repo. Skipping staleness check."
+            exit 0
+          fi
+
+          {
+            echo "COMMITS_AHEAD=$COMMITS_AHEAD"
+            echo "DAYS_GAP=$DAYS_GAP"
+          } >> "$GITHUB_ENV"
           echo "Result: $COMMITS_AHEAD imported-path commits ahead, gap = ${DAYS_GAP} days"
 
       - name: Open staleness issue (idempotent dedupe)
-        # shellcheck disable=SC2016
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REF: ${{ steps.pin.outputs.ref }}
           SIMULATE: ${{ inputs.simulate_stale || 'false' }}
         run: |
+          # shellcheck disable=SC2016
           set -euo pipefail
 
           STALE=false
