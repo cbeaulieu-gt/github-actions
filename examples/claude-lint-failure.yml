@@ -1,0 +1,45 @@
+# claude-lint-failure.yml — Lint failure diagnosis with optional auto-fix
+#
+# Reusable workflow: glitchwerks/github-actions/.github/workflows/claude-lint-failure.yml@v2
+#
+# Prerequisites:
+#   - GitHub App installed on this repo with Contents r/w + Pull requests r/w
+#   - Secrets available: CLAUDE_CODE_OAUTH_TOKEN, APP_ID, APP_PRIVATE_KEY
+#   - GHCR overlay packages accessible (Internal visibility or per-repo grant)
+#
+# To use: copy this file to .github/workflows/claude-lint-failure.yml, commit, push.
+# Replace the `npm run lint` step in the `lint` job with your actual linter command.
+
+name: Lint with Claude Diagnosis
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+  packages: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run linter
+        run: npm run lint  # replace with your linter
+
+  notify-claude:
+    needs: [lint]
+    if: failure()
+    uses: glitchwerks/github-actions/.github/workflows/claude-lint-failure.yml@v2
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+      run_id: ${{ github.run_id }}
+      # auto_apply: true  # uncomment to allow Claude to commit a fix automatically
+    secrets:
+      claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      app_id: ${{ secrets.APP_ID }}
+      app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
