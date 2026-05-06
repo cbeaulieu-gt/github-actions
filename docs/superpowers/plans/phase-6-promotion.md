@@ -683,6 +683,23 @@ Phase 6 ships rollback with the following gate stack:
 
 - [ ] **Step 6.4.6: Record outcome in Phase 6 PR body.**
 
+### Task 6.4 deviation (2026-05-05): live dispatch deferred to Task 6.9
+
+**Problem discovered at execution time:** `gh workflow run runtime-rollback.yml --ref phase-6-promotion` returns `HTTP 404: workflow runtime-rollback.yml not found on the default branch`. GitHub indexes `workflow_dispatch` workflows from the **default branch only** — a workflow that exists on a feature branch but not on `main` is invisible to the dispatch API. This is a hard GitHub-side gate, not a CLI quirk.
+
+**Why neither inquisitor pass caught this:** Pass 1 and Pass 2 both reviewed `runtime-rollback.yml`'s logic and the dispatch command syntax; neither pass tested whether the dispatch CLI would actually accept the `--ref phase-6-promotion` invocation against a default-branch-absent workflow. The check is empirical and only surfaces at run time.
+
+**Resolution: Task 6.4 sub-steps 6.4.3 / 6.4.4 / 6.4.5 are deferred to Task 6.9.** Pre-merge, Task 6.4's value reduces to **static validation only**:
+- ✅ `actionlint` clean (run during Step 6.3.8)
+- ✅ Inquisitor Pass 1 + Pass 2 reviewed the workflow's logic
+- ✅ All 5 validation steps (shape → tag exists → revision label → inventory-match → smoke) are visibly chained with explicit error exits
+
+The live empty-diff dry-run + deliberate-failure rehearsal happen as part of Task 6.9 post-merge, where the workflow IS on `main` and the dispatch API accepts the invocation. Task 6.9's existing happy-path (set A → B → roll back → re-promote) and broken-target rehearsal (Step 6.9.7) cover both Step 6.4.3's empty-diff and Step 6.4.5's deliberate-failure intent — no functional loss from this deferral, only timing.
+
+**Considered alternative — rejected:** open a separate PR that merges only the `runtime-rollback.yml` stub to `main`, then dispatch from the feature branch. Adds a merge cycle, splits Phase 6 across two PRs, and creates a window where the workflow exists but the spec/plan references don't yet. Not worth it for a sanity check that's already covered by static validation.
+
+**Phase 6 PR body line:** `Task 6.4 (rollback dry-run): static validation pre-merge (actionlint clean + inquisitor coverage); live dispatch deferred to Task 6.9 post-merge per GitHub workflow_dispatch default-branch-only restriction.`
+
 ---
 
 ## Task 6.5: Author runtime-check-private-freshness.yml
