@@ -1,0 +1,191 @@
+name: marker-emission-aggregate
+
+# Weekly aggregator for claude-pr-review/quality-gate-shadow commit statuses.
+#
+# Queries the last 7 days of merged PRs, checks each PR's head SHA for
+# quality-gate-shadow statuses, and counts outcomes (agree, disagree,
+# marker_missing, marker_invalid). Surfaces marker_missing events as a
+# deduped GitHub issue so the Phase 3 cutover criterion can be tracked.
+#
+# This workflow is OBSERVABILITY ONLY — it always exits 0. The issue it
+# may open is the signal, not the workflow run result.
+#
+# Cutover criterion (locked decision #5, plan §Phase 2):
+#   ≥20 reviews across ≥5 PRs, zero disagreement, zero marker_missing.
+#
+# Refs: #185, #183, #223
+
+on:
+  schedule:
+    # Every Monday at 07:00 UTC
+    - cron: '0 7 * * MON'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  aggregate:
+    name: Aggregate shadow-gate outcomes (last 7 days)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Aggregate quality-gate-shadow outcomes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+
+          SINCE=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+            || date -u -v-7d +%Y-%m-%dT%H:%M:%SZ)
+          echo "Aggregating shadow-gate outcomes since $SINCE"
+
+          # Fetch recently merged PRs (last 7 days, up to 100)
+          MERGED_PRS=$(gh api "repos/$REPO/pulls?state=closed&sort=updated&direction=desc&per_page=100" \
+            --jq --arg since "$SINCE" \
+            '[.[] | select(.merged_at != null and .merged_at >= $since) | {number: .number, head_sha: .head.sha, title: .title}]' \
+            2>/dev/null || echo "[]")
+
+          PR_COUNT=$(printf '%s' "$MERGED_PRS" | jq 'length')
+          echo "Found $PR_COUNT merged PRs in the last 7 days"
+
+          # Counters
+          total=0
+          agree_clean=0
+          agree_blocking=0
+          disagree_count=0
+          marker_missing_count=0
+          marker_invalid_count=0
+          missing_pr_numbers=""
+
+          # For each merged PR, query commit statuses for quality-gate-shadow
+          while IFS= read -r pr_obj; do
+            pr_number=$(printf '%s' "$pr_obj" | jq -r '.number')
+            head_sha=$(printf '%s' "$pr_obj" | jq -r '.head_sha')
+
+            # Fetch statuses for the head SHA, filter to our context
+            shadow_status=$(gh api "repos/$REPO/commits/$head_sha/statuses" \
+              --jq '[.[] | select(.context == "claude-pr-review/quality-gate-shadow")] | sort_by(.updated_at) | last // empty' \
+              2>/dev/null || echo "")
+
+            if [ -z "$shadow_status" ]; then
+              # No shadow status on this PR's head SHA — skip (may have been reviewed
+              # before Phase 2 landed, or was too small/skipped)
+              continue
+            fi
+
+            total=$((total + 1))
+            desc=$(printf '%s' "$shadow_status" | jq -r '.description // ""')
+            state=$(printf '%s' "$shadow_status" | jq -r '.state // ""')
+
+            case "$desc" in
+              agree:clean*)
+                agree_clean=$((agree_clean + 1))
+                ;;
+              agree:blocking*)
+                agree_blocking=$((agree_blocking + 1))
+                ;;
+              disagree:*)
+                disagree_count=$((disagree_count + 1))
+                ;;
+              marker_missing*)
+                marker_missing_count=$((marker_missing_count + 1))
+                missing_pr_numbers="$missing_pr_numbers $pr_number"
+                ;;
+              marker_invalid*)
+                marker_invalid_count=$((marker_invalid_count + 1))
+                ;;
+              *)
+                # Unexpected description — count as marker_invalid for safety
+                marker_invalid_count=$((marker_invalid_count + 1))
+                ;;
+            esac
+          done < <(printf '%s' "$MERGED_PRS" | jq -c '.[]')
+
+          echo "Aggregation complete: total=$total agree_clean=$agree_clean agree_blocking=$agree_blocking disagree=$disagree_count marker_missing=$marker_missing_count marker_invalid=$marker_invalid_count"
+
+          # Export for subsequent steps
+          echo "TOTAL=$total" >> "$GITHUB_ENV"
+          echo "AGREE_CLEAN=$agree_clean" >> "$GITHUB_ENV"
+          echo "AGREE_BLOCKING=$agree_blocking" >> "$GITHUB_ENV"
+          echo "DISAGREE=$disagree_count" >> "$GITHUB_ENV"
+          echo "MARKER_MISSING=$marker_missing_count" >> "$GITHUB_ENV"
+          echo "MARKER_INVALID=$marker_invalid_count" >> "$GITHUB_ENV"
+          # Trim leading space
+          echo "MISSING_PRS=${missing_pr_numbers# }" >> "$GITHUB_ENV"
+          echo "WEEK_OF=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
+
+      - name: Write step summary
+        run: |
+          {
+            echo "## Quality-gate shadow — weekly aggregate"
+            echo ""
+            printf '**Week of:** %s  \n' "$WEEK_OF"
+            printf '**PRs with shadow status:** %d\n' "$TOTAL"
+            echo ""
+            echo "| Outcome | Count |"
+            echo "|---------|-------|"
+            printf '| `agree:clean` | %d |\n' "$AGREE_CLEAN"
+            printf '| `agree:blocking` | %d |\n' "$AGREE_BLOCKING"
+            printf '| `disagree:*` | %d |\n' "$DISAGREE"
+            printf '| `marker_missing` | %d |\n' "$MARKER_MISSING"
+            printf '| `marker_invalid` | %d |\n' "$MARKER_INVALID"
+            echo ""
+            if [ "$MARKER_MISSING" -gt 0 ]; then
+              echo "> **marker_missing PRs:** $MISSING_PRS"
+              echo "> These PRs had a quality-gate-shadow \`error\` status due to a missing marker block."
+              echo "> See issue \`Quality-gate shadow: marker_missing events detected\` for tracking."
+            fi
+            echo ""
+            echo "### Phase 3 cutover criterion"
+            echo "Locked decision \#5: ≥20 reviews across ≥5 PRs, zero disagreement, zero marker_missing."
+            printf 'Current: %d reviews, disagree=%d, marker_missing=%d\n' "$TOTAL" "$DISAGREE" "$MARKER_MISSING"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open or update deduped issue for marker_missing events
+        if: env.MARKER_MISSING != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+
+          ISSUE_TITLE="Quality-gate shadow: marker_missing events detected"
+
+          # Search for an existing open issue with this exact title
+          EXISTING=$(gh issue list \
+            --repo "$REPO" \
+            --state open \
+            --search "\"$ISSUE_TITLE\" in:title" \
+            --json number,title \
+            --jq '[.[] | select(.title == "'"$ISSUE_TITLE"'")] | first | .number // empty' \
+            2>/dev/null || echo "")
+
+          # Build body via printf to avoid YAML-parser confusion from bare
+          # "**key:** value" patterns at column 0 inside a block scalar.
+          BODY_TEXT=$(printf \
+            '**Week of:** %s\n\n**marker_missing count:** %s\n\n**Affected PR numbers:** %s\n\n**Context:** The `claude-pr-review/quality-gate-shadow` advisory status reported `marker_missing`\nfor %s PR(s) this week. This means those PRs were reviewed by a persona that did not\nemit the `<!-- claude-pr-review-summary-v1` marker block.\n\n**Impact:** The Phase 3 cutover criterion (zero marker_missing in the observation window) cannot\nbe met until this resolves. Verify the `claude-runtime-review` overlay is the current Phase 1+\ndigest and that `claude-pr-review.yml` references it correctly.\n\n**Recovery per PR:** `gh run rerun <run-id>` or push an empty commit to trigger a fresh review.\n\n---\nRefs #185 #183 #223\n\n%s' \
+            "$WEEK_OF" "$MARKER_MISSING" "$MISSING_PRS" "$MARKER_MISSING" \
+            '🤖 _Generated by Claude Code on behalf of @cbeaulieu-gt_')
+
+          if [ -n "$EXISTING" ]; then
+            echo "Updating existing issue #$EXISTING with new marker_missing report"
+            gh issue comment "$EXISTING" \
+              --repo "$REPO" \
+              --body "$BODY_TEXT"
+          else
+            echo "Opening new issue: $ISSUE_TITLE"
+            gh issue create \
+              --repo "$REPO" \
+              --title "$ISSUE_TITLE" \
+              --body "$BODY_TEXT"
+          fi
+
+      - name: Exit 0 — observability workflow always succeeds
+        run: echo "Aggregation complete. This workflow is observability-only and always exits 0."

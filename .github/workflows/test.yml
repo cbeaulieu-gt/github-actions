@@ -20,3 +20,15 @@ jobs:
 
       - name: Run router tests
         run: bash ./claude-command-router/tests/run-cases.sh
+
+  marker-cases:
+    name: claude-pr-review marker corpus
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Run marker tests
+        run: bash ./pr-review/tests/run-marker-cases.sh
