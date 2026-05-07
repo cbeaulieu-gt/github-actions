@@ -649,7 +649,7 @@ jobs:
           echo "${{ steps.build.outputs.digest }}" > "/tmp/digests/${{ matrix.overlay }}.digest"
 
       - name: Upload digest artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: digest-${{ matrix.overlay }}
           path: /tmp/digests/${{ matrix.overlay }}.digest
@@ -668,7 +668,7 @@ jobs:
       digest_explain: ${{ steps.read.outputs.digest_explain }}
     steps:
       - name: Download all digest artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: /tmp/digests
           pattern: digest-*
