@@ -48,6 +48,7 @@ jobs:
           echo "Aggregating shadow-gate outcomes since $SINCE"
 
           # Fetch recently merged PRs (last 7 days, up to 100)
+          # shellcheck disable=SC2016
           MERGED_PRS=$(gh api "repos/$REPO/pulls?state=closed&sort=updated&direction=desc&per_page=100" \
             --jq --arg since "$SINCE" \
             '[.[] | select(.merged_at != null and .merged_at >= $since) | {number: .number, head_sha: .head.sha, title: .title}]' \
@@ -163,6 +164,7 @@ jobs:
           ISSUE_TITLE="Quality-gate shadow: marker_missing events detected"
 
           # Search for an existing open issue with this exact title
+          # shellcheck disable=SC2016
           EXISTING=$(gh issue list \
             --repo "$REPO" \
             --state open \
@@ -173,6 +175,7 @@ jobs:
 
           # Build body via printf to avoid YAML-parser confusion from bare
           # "**key:** value" patterns at column 0 inside a block scalar.
+          # shellcheck disable=SC2016
           BODY_TEXT=$(printf \
             '**Week of:** %s\n\n**marker_missing count:** %s\n\n**Affected PR numbers:** %s\n\n**Context:** The `claude-pr-review/quality-gate-shadow` advisory status reported `marker_missing`\nfor %s PR(s) this week. This means those PRs were reviewed by a persona that did not\nemit the `<!-- claude-pr-review-summary-v1` marker block.\n\n**Impact:** The Phase 3 cutover criterion (zero marker_missing in the observation window) cannot\nbe met until this resolves. Verify the `claude-runtime-review` overlay is the current Phase 1+\ndigest and that `claude-pr-review.yml` references it correctly.\n\n**Recovery per PR:** `gh run rerun <run-id>` or push an empty commit to trigger a fresh review.\n\n---\nRefs #185 #183 #223\n\n%s' \
             "$WEEK_OF" "$MARKER_MISSING" "$MISSING_PRS" "$MARKER_MISSING" \
