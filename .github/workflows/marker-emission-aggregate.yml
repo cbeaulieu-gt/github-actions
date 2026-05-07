@@ -39,6 +39,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+        # shellcheck disable=SC2016
         run: |
           set -uo pipefail
 
@@ -82,7 +83,6 @@ jobs:
 
             total=$((total + 1))
             desc=$(printf '%s' "$shadow_status" | jq -r '.description // ""')
-            state=$(printf '%s' "$shadow_status" | jq -r '.state // ""')
 
             case "$desc" in
               agree:clean*)
@@ -111,17 +111,20 @@ jobs:
           echo "Aggregation complete: total=$total agree_clean=$agree_clean agree_blocking=$agree_blocking disagree=$disagree_count marker_missing=$marker_missing_count marker_invalid=$marker_invalid_count"
 
           # Export for subsequent steps
-          echo "TOTAL=$total" >> "$GITHUB_ENV"
-          echo "AGREE_CLEAN=$agree_clean" >> "$GITHUB_ENV"
-          echo "AGREE_BLOCKING=$agree_blocking" >> "$GITHUB_ENV"
-          echo "DISAGREE=$disagree_count" >> "$GITHUB_ENV"
-          echo "MARKER_MISSING=$marker_missing_count" >> "$GITHUB_ENV"
-          echo "MARKER_INVALID=$marker_invalid_count" >> "$GITHUB_ENV"
-          # Trim leading space
-          echo "MISSING_PRS=${missing_pr_numbers# }" >> "$GITHUB_ENV"
-          echo "WEEK_OF=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
+          {
+            echo "TOTAL=$total"
+            echo "AGREE_CLEAN=$agree_clean"
+            echo "AGREE_BLOCKING=$agree_blocking"
+            echo "DISAGREE=$disagree_count"
+            echo "MARKER_MISSING=$marker_missing_count"
+            echo "MARKER_INVALID=$marker_invalid_count"
+            # Trim leading space
+            echo "MISSING_PRS=${missing_pr_numbers# }"
+            echo "WEEK_OF=$(date -u +%Y-%m-%d)"
+          } >> "$GITHUB_ENV"
 
       - name: Write step summary
+        # shellcheck disable=SC2016
         run: |
           {
             echo "## Quality-gate shadow — weekly aggregate"
@@ -153,6 +156,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+        # shellcheck disable=SC2016
         run: |
           set -uo pipefail
 
