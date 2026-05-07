@@ -73,7 +73,7 @@ jobs:
       # Empty string when status != 'ok' (the lookup step is gated on status='ok').
       image:   ${{ steps.image.outputs.image }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - id: r
         uses: glitchwerks/github-actions/claude-command-router@v2
@@ -182,7 +182,7 @@ jobs:
             echo "value=${{ github.token }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           token: ${{ steps.token.outputs.value }}
 
