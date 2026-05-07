@@ -46,7 +46,7 @@ jobs:
     # at $PATH_TO_CLAUDE_CODE_EXECUTABLE plus the review-specific agent set
     # (different-eyes guarantee per spec §3.1, §10.2).
     # Digest source: STAGE 3 build run 25405636887 (post-#200 rebuild, 3bb6a22) — base image bakes safe.directory '*' (#199, #197).
-    container: ghcr.io/glitchwerks/claude-runtime-review@sha256:6b08cb5969fc5a3b5d0ffd9a4b511e5dd4094a1cb27871ec038ffa1d776a92f5
+    container: ghcr.io/glitchwerks/claude-runtime-review@sha256:0db0d558f9289126e00ddef91cba2e1e699ef651275648cb61414c6c2fe4b700
     concurrency:
       group: claude-pr-review-${{ github.repository }}-${{ github.event.pull_request.number }}
       cancel-in-progress: true
