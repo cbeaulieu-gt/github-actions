@@ -39,8 +39,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-        # shellcheck disable=SC2016
         run: |
+          # shellcheck disable=SC2016
           set -uo pipefail
 
           SINCE=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
@@ -124,8 +124,8 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Write step summary
-        # shellcheck disable=SC2016
         run: |
+          # shellcheck disable=SC2016
           {
             echo "## Quality-gate shadow — weekly aggregate"
             echo ""
@@ -156,8 +156,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-        # shellcheck disable=SC2016
         run: |
+          # shellcheck disable=SC2016
           set -uo pipefail
 
           ISSUE_TITLE="Quality-gate shadow: marker_missing events detected"
