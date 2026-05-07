@@ -57,7 +57,7 @@ jobs:
     # — the same agent set handles read-only and apply paths, behavior is
     # gated by the `auto_apply` input passed to the prompt.
     # Digest source: STAGE 3 build run 25405636887 (post-#200 rebuild, 3bb6a22) — base image bakes safe.directory '*' (#199, #197).
-    container: ghcr.io/glitchwerks/claude-runtime-fix@sha256:da5fc69b6dd39b31e5e3c0e8d07cdd82203451be59ad4102c48cc91e8322ad4a
+    container: ghcr.io/glitchwerks/claude-runtime-fix@sha256:05b087b6e61c399568c0930a5eda435d92e1f8716458cf00c7b6bcc0eaaef52c
     concurrency:
       group: claude-ci-failure-${{ github.repository }}-${{ inputs.pr_number }}
       cancel-in-progress: true
