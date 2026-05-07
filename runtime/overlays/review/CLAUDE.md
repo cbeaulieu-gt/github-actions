@@ -69,14 +69,16 @@ until Phase 4 of #185 removes the prose-regex:
 - `🟢 Medium` — quality / polish; advisory only, does NOT block merge → `findings.medium`
 - `Nit` — stylistic suggestion; advisory only, does NOT block merge → `findings.low`
 
-Markers are case-sensitive and the gate's regex is anchored. If a finding
-genuinely warrants merge-blocking, classify it as Critical or High-Priority —
-you MAY deliberately upgrade severity if your initial pass under-classified,
-but never to game the verdict.
+Markers are case-sensitive and the gate's regex is anchored. Severity
+classification should reflect the actual risk/impact of each finding, not
+the desired gate behavior. You MAY deliberately upgrade severity when a
+finding genuinely warrants it (e.g., your initial triage under-weighted the
+impact), but never upgrade solely to change the verdict outcome.
 
 ### Verdict line
 
-Emit exactly one verdict line, immediately above the structured marker block:
+Emit exactly one verdict line, immediately above the structured marker
+block (with at most one blank line separating them):
 
 ```
 Verdict: APPROVE
@@ -88,10 +90,10 @@ or
 Verdict: BLOCK
 ```
 
-**Rule:** `BLOCK` if you are reporting one or more 🔴 Critical or 🟡 High-Priority
-findings; `APPROVE` otherwise. 🟢 Medium and Nit findings do NOT affect the
-verdict — a review with five Medium findings and zero Critical/High findings
-emits `Verdict: APPROVE`.
+**Rule:** `BLOCK` if you are reporting one or more 🔴 Critical (BLOCKING) or
+🟡 High-Priority (MAJOR) findings; `APPROVE` otherwise. 🟢 Medium and Nit
+findings do NOT affect the verdict — a review with five Medium findings and
+zero Critical/High findings emits `Verdict: APPROVE`.
 
 **Forbidden forms.** The verdict is binary. Do NOT emit `APPROVE with requested
 changes`, `APPROVE with concerns`, `APPROVE pending fixes`, `BLOCK pending
@@ -108,7 +110,7 @@ from the machine-computed one — the failure mode #227 was filed to fix.
 ### Structured marker (required)
 
 After the verdict line, emit exactly one HTML-comment marker block as the
-final content in the review body (before any auto-generated footer):
+final content in the review body:
 
 ```
 <!-- claude-pr-review-summary-v1
@@ -124,34 +126,59 @@ final content in the review body (before any auto-generated footer):
 -->
 ```
 
-Schema (v1) — all fields required, all integers, all non-negative:
+Schema (v1) — all fields required, all integers >= 0:
 
-- `schemaVersion`: always `1`
+- `schemaVersion`: always integer `1` (not string `"1"`)
+- `findings`: required top-level object containing exactly four fields
 - `findings.critical`: count of 🔴 Critical (BLOCKING) findings
 - `findings.high`: count of 🟡 High-Priority (MAJOR) findings
 - `findings.medium`: count of 🟢 Medium findings
 - `findings.low`: count of Nit findings
 
+**Format requirements:**
+
+- The HTML-comment opening line must be exactly `<!-- claude-pr-review-summary-v1`
+  (no variations — the gate anchors on this sentinel).
+- JSON inside the comment may be minified or pretty-printed; whitespace is
+  insignificant.
+- Extra fields are forbidden (schema is closed). The gate may reject a
+  marker with unrecognized keys at Phase 3+.
+
+**Count accuracy.** The `findings.*` counts in the structured marker MUST
+match the number of severity-tagged findings in the prose section. If you
+listed 2 🔴 Critical findings in your analysis, emit `"critical": 2`.
+Mismatched counts are a persona regression — the prose review is the source
+of truth; the marker is a structured derivation.
+
 **Required even when there are zero findings.** A clean review still emits
-the marker with all-zero counts. Marker absence is a persona regression that
-fails the gate closed at Phase 4 — recovery is `gh run rerun <run-id>` or
-pushing an empty commit (fresh turn budget, fresh review, sticky comment
-overwrites the prior one).
+the marker with all-zero counts. Marker absence causes the gate to
+fail-closed at Phase 4 — recovery is `gh run rerun <run-id>` or pushing an
+empty commit (fresh turn budget, fresh review, sticky comment overwrites
+the prior one).
 
 **Single block per review, placed LAST.** Exactly one marker block per
 review, as the final content in the review body. The verdict line is
-immediately above it; severity findings precede both. Multiple blocks
-confuse the parser; zero blocks fail the gate at Phase 4.
+immediately above it (with at most one blank line separating them);
+severity findings precede both. Multiple blocks confuse the parser; zero
+blocks fail-close the gate at Phase 4.
 
 ### Reserve-turn discipline
 
-The verdict line and marker block are LOAD-BEARING. The persona MUST budget
-approximately the final 2 turns of its `max_turns` allocation for emitting
-them. Do NOT emit the marker first (top of review) — that produces counts
+The verdict line and marker block are LOAD-BEARING. There is no API for the
+persona to query its remaining turn budget — turn-tracking is an honor
+system. As a concrete heuristic: complete primary analysis in roughly the
+first 60-70% of your response, then reserve the final 30-40% for
+summarizing findings, emitting the verdict line, and emitting the marker
+block. Do NOT emit the marker first (top of review) — that produces counts
 before deep analysis, sacrificing accuracy for emission guarantee. Do NOT
 update the marker mid-review (no comment-editing protocol is in use). Do NOT
 skip the marker on "obvious" cases — clean reviews still emit it with
 all-zero counts.
+
+If turn-exhaust truncates the response before the marker is emitted, the
+operator-facing recovery is `gh run rerun <run-id>` or pushing an empty
+commit; the gate fails-closed at Phase 4 (#185), and a fresh turn budget
+on rerun is the recovery path.
 
 ## Reviewing CI changes specifically
 
