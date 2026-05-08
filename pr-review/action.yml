@@ -177,19 +177,23 @@ runs:
       shell: bash
       run: echo "REVIEW_START_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
 
-    - name: Install persona for claude-code-action CLI
+    - name: Load persona as APPEND_SYSTEM_PROMPT
       shell: bash
       run: |
-        # GitHub Actions overrides HOME=/github/home in container jobs, discarding
-        # the image's baked HOME=/opt/claude. The fresh CLI installed by
-        # claude-code-action@v1 reads its user-level CLAUDE.md from
-        # $HOME/.claude/CLAUDE.md — a path that does not exist by default.
-        # Copy the baked persona to where the runtime CLI looks.
-        # Tracking: https://github.com/glitchwerks/github-actions/issues/242
+        # claude-code-action@v1 reads APPEND_SYSTEM_PROMPT from the environment
+        # and appends its content to the LLM's system prompt. The runtime images
+        # bake the verb-specific persona at /opt/claude/.claude/CLAUDE.md but
+        # GitHub Actions container jobs don't load that file as a system prompt
+        # via $HOME/.claude/CLAUDE.md (that path is read by the CLI for normal
+        # interactive use, not by claude-code-action's invocation path).
+        # See https://github.com/glitchwerks/github-actions/issues/242
         if [ -f /opt/claude/.claude/CLAUDE.md ]; then
-          mkdir -p "$HOME/.claude"
-          cp /opt/claude/.claude/CLAUDE.md "$HOME/.claude/CLAUDE.md"
-          echo "Persona installed: $(wc -l < "$HOME/.claude/CLAUDE.md") lines from /opt/claude/.claude/CLAUDE.md"
+          {
+            echo "APPEND_SYSTEM_PROMPT<<__EOF_PERSONA_242__"
+            cat /opt/claude/.claude/CLAUDE.md
+            echo "__EOF_PERSONA_242__"
+          } >> "$GITHUB_ENV"
+          echo "Persona loaded into APPEND_SYSTEM_PROMPT: $(wc -l < /opt/claude/.claude/CLAUDE.md) lines"
         else
           echo "::warning::No baked persona at /opt/claude/.claude/CLAUDE.md — running without overlay persona"
         fi
