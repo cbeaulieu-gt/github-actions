@@ -284,7 +284,13 @@ runs:
         # - Plain "MAJOR" / "BLOCKING" require markdown bold to avoid matching code
         #   snippets, prose, or unrelated tokens (SUBMAJOR, MAJOR_VERSION, UNBLOCKING).
         # Regex sourced from lib/severity-regex.sh (shared with synthesis and shadow gate).
-        BLOCKER_HITS=$(printf '%s' "$BODY" | grep -E -c "$SEVERITY_BLOCKER_RE" || true)
+        # Pre-filter: drop lines containing the resolution checkmark (✅) before the
+        # severity grep. On incremental (multi-pass) reviews the persona narrates
+        # resolved findings as `#### ✅ 🔴 Critical (BLOCKING) - FIXED` — the severity
+        # token is identical to a fresh finding, but the checkmark distinguishes
+        # resolved-narration from open findings. Without this pre-filter, the gate
+        # blocks PRs whose findings are all fixed (issue #248).
+        BLOCKER_HITS=$(printf '%s' "$BODY" | grep -v '✅' | grep -E -c "$SEVERITY_BLOCKER_RE" || true)
 
         echo "Quality gate scan: $BLOCKER_HITS marker(s) matched in latest sticky comment"
 
@@ -357,10 +363,16 @@ runs:
         # Count per-bucket using grep -oE | wc -l (counts matches, not lines).
         # grep -cE would count lines; a single line containing two severity tokens
         # would count as 1 — grep -oE | wc -l counts each token individually.
-        CRITICAL=$(printf '%s' "$BODY" | grep -oE "$SEVERITY_CRITICAL_RE" | wc -l || true)
-        HIGH=$(printf '%s' "$BODY"     | grep -oE "$SEVERITY_HIGH_RE"     | wc -l || true)
-        MEDIUM=$(printf '%s' "$BODY"   | grep -oE "$SEVERITY_MEDIUM_RE"   | wc -l || true)
-        LOW=$(printf '%s' "$BODY"      | grep -oE "$SEVERITY_LOW_RE"      | wc -l || true)
+        # Pre-filter `grep -v '✅'` drops resolution-narration lines (e.g.
+        # `#### ✅ 🔴 Critical (BLOCKING) - FIXED`) so resolved findings on
+        # incremental reviews don't inflate the synthesized counts (issue #248).
+        # Same pre-filter applies in the authoritative and shadow gate steps;
+        # all three callsites must stay in sync.
+        OPEN_BODY=$(printf '%s' "$BODY" | grep -v '✅' || true)
+        CRITICAL=$(printf '%s' "$OPEN_BODY" | grep -oE "$SEVERITY_CRITICAL_RE" | wc -l || true)
+        HIGH=$(printf '%s' "$OPEN_BODY"     | grep -oE "$SEVERITY_HIGH_RE"     | wc -l || true)
+        MEDIUM=$(printf '%s' "$OPEN_BODY"   | grep -oE "$SEVERITY_MEDIUM_RE"   | wc -l || true)
+        LOW=$(printf '%s' "$OPEN_BODY"      | grep -oE "$SEVERITY_LOW_RE"      | wc -l || true)
 
         # Defensive synthesis: refuse to post 0/0/0/0 unless a corroboration signal
         # confirms the LLM performed substantive analysis.
@@ -448,7 +460,10 @@ runs:
 
         # --- Prose-regex result (sourced from lib/severity-regex.sh) ----------------
         # Regex sourced above; $SEVERITY_BLOCKER_RE is the combined blocker class.
-        BLOCKER_HITS=$(printf '%s' "$BODY" | grep -E -c "$SEVERITY_BLOCKER_RE" || true)
+        # `grep -v '✅'` drops resolution-narration lines so resolved findings
+        # on incremental reviews don't inflate the prose hit count. Must stay
+        # in sync with the authoritative gate step's identical pre-filter (#248).
+        BLOCKER_HITS=$(printf '%s' "$BODY" | grep -v '✅' | grep -E -c "$SEVERITY_BLOCKER_RE" || true)
         if [ "$BLOCKER_HITS" -gt "0" ]; then
           PROSE_RESULT="blocking"
         else
