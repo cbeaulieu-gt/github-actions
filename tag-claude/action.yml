@@ -106,9 +106,9 @@ runs:
         # See https://github.com/glitchwerks/github-actions/issues/242
         if [ -f /opt/claude/.claude/CLAUDE.md ]; then
           {
-            echo "APPEND_SYSTEM_PROMPT<<__EOF_PERSONA_242__"
+            echo "APPEND_SYSTEM_PROMPT<<__EOF_PERSONA_8a4f2e9b__"
             cat /opt/claude/.claude/CLAUDE.md
-            echo "__EOF_PERSONA_242__"
+            echo "__EOF_PERSONA_8a4f2e9b__"
           } >> "$GITHUB_ENV"
           echo "Persona loaded into APPEND_SYSTEM_PROMPT: $(wc -l < /opt/claude/.claude/CLAUDE.md) lines"
         else
