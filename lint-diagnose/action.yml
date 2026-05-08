@@ -106,6 +106,23 @@ runs:
           --jq '[.[] | {filename: .filename, patch: .patch}] | .[0:30]' \
           > /tmp/pr_diff.json
 
+    - name: Install persona for claude-code-action CLI
+      shell: bash
+      run: |
+        # GitHub Actions overrides HOME=/github/home in container jobs, discarding
+        # the image's baked HOME=/opt/claude. The fresh CLI installed by
+        # claude-code-action@v1 reads its user-level CLAUDE.md from
+        # $HOME/.claude/CLAUDE.md — a path that does not exist by default.
+        # Copy the baked persona to where the runtime CLI looks.
+        # Tracking: https://github.com/glitchwerks/github-actions/issues/242
+        if [ -f /opt/claude/.claude/CLAUDE.md ]; then
+          mkdir -p "$HOME/.claude"
+          cp /opt/claude/.claude/CLAUDE.md "$HOME/.claude/CLAUDE.md"
+          echo "Persona installed: $(wc -l < "$HOME/.claude/CLAUDE.md") lines from /opt/claude/.claude/CLAUDE.md"
+        else
+          echo "::warning::No baked persona at /opt/claude/.claude/CLAUDE.md — running without overlay persona"
+        fi
+
     - name: Diagnose lint failure
       id: claude-diagnose
       uses: anthropics/claude-code-action@v1
