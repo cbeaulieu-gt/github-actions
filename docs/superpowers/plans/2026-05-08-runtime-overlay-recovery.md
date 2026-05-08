@@ -51,6 +51,8 @@ Concretely, a `0/0/0/0` clean synthesis is **accepted** when any of the followin
 
 If none of these hold, synthesis is skipped and an error status is posted. This makes the failure mode visible to the gate operator rather than silently laundering it through the shadow gate.
 
+**Signal independence:** The body-length check is independent of persona compliance — the LLM produces verbose output even when ignoring format instructions. The section-header check correlates with persona compliance (if the persona is ignored badly enough to drop severity emojis, it may also be ignored badly enough to drop `### Findings`/`### Verdict` headers). The headers remain a useful but secondary signal; the corroboration check accepts EITHER (A OR B) because we want to catch the case where the LLM produces a non-empty review without standard structure. The body-length check is the primary independent corroborator. An implementer must not tighten the section-header check later thinking it is load-bearing — it is not.
+
 Option B (periodic monitoring scan) was considered and rejected for this plan: a separate cron job that audits recent reviews for zero-count prose is useful long-term but is separate work that may not ship. Defensive synthesis is local to W3's PR and ships atomically with the fix.
 
 **Acceptance criteria implication.** On at least one real consumer-side run that contains findings, a human must inspect that the synthesized counts match the prose severity tags. This manual spot-check is a required acceptance criterion — not optional verification — because it is the only way to confirm the persona did not silently drop severity tagging on that run.
@@ -63,27 +65,33 @@ The comment-target selector is the load-bearing mechanism for W3. An implementer
 
 ### Spike scope
 
-Run the selector against real PR reviews in siege-web and confirm the comment-target behavior:
+Run the selector against real PR reviews in siege-web and confirm the comment-target behavior.
 
-1. Float `v2` to the current branch HEAD (or any HEAD that triggers real reviews in siege-web).
-2. Open a synthetic PR in siege-web that triggers `claude-pr-review`.
-3. After the review completes, run:
-   ```bash
-   gh api "repos/glitchwerks/siege-web/issues/$PR_NUMBER/comments?per_page=100" \
-     --jq '[.[] | select(.user.login == "github-actions[bot]")] | sort_by(.updated_at)'
-   ```
-4. Record: how many `github-actions[bot]` comments exist, their `created_at` vs `updated_at` timestamps, and which one is the review body.
-5. Confirm that exactly one comment satisfies `updated_at >= REVIEW_START_TIME`.
-6. Confirm whether `track_progress: true` interleaves any additional bot comments (with their own `updated_at` values) that could produce multiple matches.
+**Spike protocol:**
 
-**Prerequisites and the `pull_request_target` caveat.** The verification must use the floating-tag approach (step 1 above) — opening a siege-web PR against `main` resolves the reusable workflow from the base branch at `main` regardless of the head branch. A `pull_request_target` trigger resolves the called workflow from the base, not the head; this is the same trap siege-web #309 demonstrated. Float `v2` to the spike branch before opening the synthetic PR.
+1. Run the selector against ≥ 5 real PR reviews on siege-web or this repo's dogfood. Capture each trial's result (which comment was selected, was it the right one).
+2. Run at least one trial that exercises a `gh run rerun` overlap (kick off rerun while a prior run's progress comment is still updating).
+3. Run at least one trial with a manually pre-pushed bot comment that has `updated_at >= REVIEW_START_TIME` from a prior run, simulating the prior-run sticky race.
+4. Spike passes only if 100% of trials select the right comment. A single false-positive selector hit fails the spike.
+5. Document each trial's result in the spike comment on #246.
+
+For each trial, the core verification query is:
+```bash
+gh api "repos/glitchwerks/siege-web/issues/$PR_NUMBER/comments?per_page=100" \
+  --jq '[.[] | select(.user.login == "github-actions[bot]")] | sort_by(.updated_at)'
+```
+Record: how many `github-actions[bot]` comments exist, their `created_at` vs `updated_at` timestamps, and which one is the review body. Confirm that exactly one comment satisfies `updated_at >= REVIEW_START_TIME`.
+
+**Prerequisites and the `pull_request_target` caveat.** The verification must use the floating-tag approach — opening a siege-web PR against `main` resolves the reusable workflow from the base branch at `main` regardless of the head branch. A `pull_request_target` trigger resolves the called workflow from the base, not the head; this is the same trap siege-web #309 demonstrated. Float `v2` to the spike branch before opening the synthetic PR.
 
 ### Spike checkpoint
 
 The spike's output is a written finding posted as a comment on PR #246. It must state one of:
 
-- **Selector confirmed**: exactly one `github-actions[bot]` comment matches `updated_at >= REVIEW_START_TIME`; it is the review body; no additional progress comments match.
+- **Selector confirmed**: exactly one `github-actions[bot]` comment matches `updated_at >= REVIEW_START_TIME`; it is the review body; no additional progress comments match. All ≥ 5 trials passed with 100% selection accuracy.
 - **Selector revised**: the selector does not reliably return exactly one match under [documented scenario]. The revised selector design is: [alternative]. The implementation PR must use the revised design.
+
+The spike comment must explicitly state "spike passes" or "spike fails" and list each trial's result. A vague "looks good" is not sufficient sign-off.
 
 **No implementation PR (Phase 1) may open until this comment exists on #246.**
 
@@ -291,6 +299,8 @@ Per CLAUDE.md: PRs opened against this repo run `claude-pr-review` at the releas
 
 ## Existing artifact cleanup
 
+**Verify at impl-PR-open time.** This table reflects state at plan-approval time. The implementer of W3's PR must re-verify each row against current GitHub state before relying on the table's "to close" / "✓ closed" assertions — re-run the commands listed in the footer below.
+
 Verified against live GitHub state as of 2026-05-08.
 
 | Artifact | State | Note |
@@ -302,6 +312,18 @@ Verified against live GitHub state as of 2026-05-08.
 | glitchwerks/siege-web issue #304 | ✓ closed | Tracked v2.4.1 → v2.4.2 bump. |
 | github-actions issue #242 | open | Tracks `marker_missing`. Closes when W3 lands and shadow gate transitions off `error / marker_missing`. |
 | github-actions issue #245 | open | W1+W2 verification tracker. Remains open until bridge/allowlist work is verified and implemented in Phase 2. |
+
+**Re-verify commands (run at impl-PR-open time):**
+
+```bash
+gh pr view 244 --repo glitchwerks/github-actions --json state,closedAt
+gh pr view 305 --repo glitchwerks/siege-web --json state,closedAt,mergedAt
+gh pr view 309 --repo glitchwerks/siege-web --json state,closedAt
+gh issue view 304 --repo glitchwerks/siege-web --json state
+gh issue view 308 --repo glitchwerks/siege-web --json state
+gh issue view 242 --repo glitchwerks/github-actions --json state
+gh issue view 245 --repo glitchwerks/github-actions --json state
+```
 
 ---
 
