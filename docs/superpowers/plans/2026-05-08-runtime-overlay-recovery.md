@@ -1,6 +1,6 @@
 # 2026-05-08 — Marker Synthesis via Post-Processing (Phase 1 of runtime overlay recovery)
 
-**Status: DRAFT — pending second inquisitor pass**
+**Status: DRAFT — addressed round-2 inquisitor charges**
 
 | Field | Value |
 |---|---|
@@ -36,9 +36,62 @@ The structured-marker output contract (the `<!-- claude-pr-review-summary-v1` HT
 
 W3 stops relying on the LLM to emit the marker. A post-processing step, inserted after `claude-code-action@v1` completes, reads the review body already posted by the action and synthesizes the marker deterministically from the prose content using the same severity-counting regex the authoritative gate already uses. The marker is appended to the review comment via a PATCH. If the LLM happened to emit the marker correctly, the step skips (guarded by `grep -qF`).
 
+### W3's fundamental limitation — persona-tagging dropout
+
+W3 reads only what the persona wrote. The root cause of `marker_missing` is that the persona follows the `APPEND_SYSTEM_PROMPT` instruction unreliably. If the persona is ignored badly enough to omit the marker, it may also be ignored badly enough to omit `🔴 Critical` / `**MAJOR**` severity tagging on real blocker findings. In that case W3 produces `findings.critical=0, high=0` — the shadow gate posts `agree:clean`, #242 closes, and a regression in persona authority becomes invisible.
+
+**W3 does not detect or prevent persona-tagging dropout.** It converts `marker_missing` errors to synthesized markers, but a synthesized `0/0/0/0` marker on a substantive review body may indicate the persona dropped severity tagging rather than a genuinely clean review.
+
+**Defensive synthesis with corroboration (Option A).** To bound this failure mode, W3 will refuse to post a `0/0/0/0` synthesized marker unless an independent corroboration signal confirms the LLM performed substantive analysis. The corroboration check: if the diff has at least one changed line (a non-trivial review context) AND the synthesized counts are all zero AND no recognized section headers from the persona's required structure are present in the body (e.g., `### Findings` or `### Verdict`), then W3 should post `state=error` with description `synthesis_skipped:no_corroboration` rather than a misleading clean marker.
+
+Concretely, a `0/0/0/0` clean synthesis is **accepted** when any of the following holds:
+- The diff has zero changed lines (trivially empty PR — genuinely clean is expected)
+- The review body contains at least one recognized persona section header (`### Findings` or `### Verdict`)
+- The review body length is above 500 characters (implies the LLM wrote substantive prose even if un-tagged)
+
+If none of these hold, synthesis is skipped and an error status is posted. This makes the failure mode visible to the gate operator rather than silently laundering it through the shadow gate.
+
+Option B (periodic monitoring scan) was considered and rejected for this plan: a separate cron job that audits recent reviews for zero-count prose is useful long-term but is separate work that may not ship. Defensive synthesis is local to W3's PR and ships atomically with the fix.
+
+**Acceptance criteria implication.** On at least one real consumer-side run that contains findings, a human must inspect that the synthesized counts match the prose severity tags. This manual spot-check is a required acceptance criterion — not optional verification — because it is the only way to confirm the persona did not silently drop severity tagging on that run.
+
 ---
 
-## W3 — Marker synthesis via post-processing
+## Phase 0 — Verification spike (must complete before Phase 1 opens)
+
+The comment-target selector is the load-bearing mechanism for W3. An implementer who opens the implementation PR before validating the selector will either discover it is wrong mid-PR or expand the PR to include the spike inline. Neither outcome is acceptable.
+
+### Spike scope
+
+Run the selector against real PR reviews in siege-web and confirm the comment-target behavior:
+
+1. Float `v2` to the current branch HEAD (or any HEAD that triggers real reviews in siege-web).
+2. Open a synthetic PR in siege-web that triggers `claude-pr-review`.
+3. After the review completes, run:
+   ```bash
+   gh api "repos/glitchwerks/siege-web/issues/$PR_NUMBER/comments?per_page=100" \
+     --jq '[.[] | select(.user.login == "github-actions[bot]")] | sort_by(.updated_at)'
+   ```
+4. Record: how many `github-actions[bot]` comments exist, their `created_at` vs `updated_at` timestamps, and which one is the review body.
+5. Confirm that exactly one comment satisfies `updated_at >= REVIEW_START_TIME`.
+6. Confirm whether `track_progress: true` interleaves any additional bot comments (with their own `updated_at` values) that could produce multiple matches.
+
+**Prerequisites and the `pull_request_target` caveat.** The verification must use the floating-tag approach (step 1 above) — opening a siege-web PR against `main` resolves the reusable workflow from the base branch at `main` regardless of the head branch. A `pull_request_target` trigger resolves the called workflow from the base, not the head; this is the same trap siege-web #309 demonstrated. Float `v2` to the spike branch before opening the synthetic PR.
+
+### Spike checkpoint
+
+The spike's output is a written finding posted as a comment on PR #246. It must state one of:
+
+- **Selector confirmed**: exactly one `github-actions[bot]` comment matches `updated_at >= REVIEW_START_TIME`; it is the review body; no additional progress comments match.
+- **Selector revised**: the selector does not reliably return exactly one match under [documented scenario]. The revised selector design is: [alternative]. The implementation PR must use the revised design.
+
+**No implementation PR (Phase 1) may open until this comment exists on #246.**
+
+If the selector cannot be made race-free with content + time + author alone, the spike must propose an alternative: write the comment ID to `$GITHUB_ENV` immediately after a known-fresh comment is created in a setup step, or coordinate via the action's existing outputs even if the API is undocumented.
+
+---
+
+## Phase 1 — W3 implementation (opens after Phase 0 checkpoint)
 
 ### Severity buckets (from persona spec, verbatim)
 
@@ -72,7 +125,7 @@ Because the gate regex is **inline at two locations** in `action.yml`, extractin
 
 ### Comment-target identification
 
-The inquisitor's Charge #3 flagged that the "PATCH `last by updated_at`" approach is unsafe when `track_progress: true` is set, because progress comments can interleave after the review summary.
+The inquisitor's Charge #3 (round 1) flagged that the "PATCH `last by updated_at`" approach is unsafe when `track_progress: true` is set, because progress comments can interleave after the review summary.
 
 Reading `claude-code-action@v1` source (`src/github/operations/comments/create-initial.ts`, `src/entrypoints/run.ts`):
 
@@ -82,9 +135,15 @@ Reading `claude-code-action@v1` source (`src/github/operations/comments/create-i
 
 **Consequence:** W3 cannot obtain the comment ID from `${{ steps.claude-review.outputs.comment_id }}` because that output does not exist. The fallback strategy must be a content-based selector.
 
-**Chosen approach:** Fetch all `github-actions[bot]` comments on the PR, select the one whose body contains the review sentinel (`## ` heading or a known review marker, absent which fall back to the longest bot comment posted after `REVIEW_START_TIME`). This is more robust than a pure temporal selector because it anchors on content. The specific selector is: longest bot comment with `created_at >= REVIEW_START_TIME`, since `track_progress: true` updates (not creates) the sticky comment — the comment's `created_at` predates `REVIEW_START_TIME`, but its `updated_at` is after. Select by `updated_at >= REVIEW_START_TIME AND user.login == "github-actions[bot]"`, picking the single result. If multiple match (edge case: prior run commented right before this run started), take the last by `updated_at`.
+**Chosen approach:** Select by `updated_at >= REVIEW_START_TIME AND user.login == "github-actions[bot]"`, picking the single result. If multiple match (edge case: prior run commented right before this run started), take the last by `updated_at`.
 
-This remains an open question until verified against a live run. The implementation PR must enumerate all `github-actions[bot]` comments on a synthetic PR at a known post-`REVIEW_START_TIME` timestamp and confirm exactly one comment matches the selector. If more than one matches, the implementation must add a content-based tie-breaker (e.g., body contains the review's verdict line pattern `## (APPROVE|BLOCK)`).
+**Selector race risk (round-2 charge).** The two existing gate steps in `action.yml` (lines 282 and 333) currently select via `sort_by(.updated_at) | last` with no `REVIEW_START_TIME` filter. W3 adds the time filter. Three failure modes exist:
+
+1. **Replication lag:** W3 PATCHes comment A; the shadow gate step fetches stale state (without the marker) and emits `marker_missing`.
+2. **Prior-run stickies:** a sticky comment from a previous run has an `updated_at` inside the current window if the prior run finished very recently.
+3. **Rerun overlap:** `gh run rerun` launches a new run before the prior run's sticky has aged out.
+
+**Remediation (mandatory in the implementation PR):** Extract the comment-selection logic into a single helper sourced by all three steps (synthesis and both gates). Pin to a comment ID once selected by writing it to `$GITHUB_ENV`, so the shadow gate uses the same comment ID W3 already PATCHed — avoiding the replication-lag race. The Phase 0 spike must characterize whether race scenarios (b) and (c) are observed in practice; if they are, the implementation PR's selector design must address them before opening.
 
 ### Deliverables
 
@@ -102,7 +161,7 @@ SEVERITY_LOW_RE='\bNit\b'
 
 Both existing gate steps source this file and replace their inline regex with `$SEVERITY_BLOCKER_RE`. The post-processor uses the four per-bucket variables.
 
-**Deliverable B: post-processing step in `pr-review/action.yml`** — inserted between the `Quality gate — post claude-pr-review/quality-gate status` step and the `Quality gate — structured marker (advisory shadow)` step. Illustrative shape (implementation PR must confirm comment selector against a live run):
+**Deliverable B: post-processing step in `pr-review/action.yml`** — inserted between the `Quality gate — post claude-pr-review/quality-gate status` step and the `Quality gate — structured marker (advisory shadow)` step. The comment ID selected here must be written to `$GITHUB_ENV` so the shadow gate step reuses it rather than re-selecting independently. Illustrative shape (implementation PR must confirm comment selector against Phase 0 spike output before finalizing):
 
 ```yaml
 - name: Synthesize structured marker via post-processing
@@ -132,17 +191,45 @@ Both existing gate steps source this file and replace their inline regex with `$
     BODY=$(printf '%s' "$COMMENT_JSON" | jq -r '.body // ""')
     COMMENT_ID=$(printf '%s' "$COMMENT_JSON" | jq -r '.id')
 
+    # Pin comment ID for the shadow gate step to avoid replication-lag race.
+    echo "SYNTHESIS_COMMENT_ID=$COMMENT_ID" >> "$GITHUB_ENV"
+
     # Skip if the LLM already emitted the marker correctly.
     if printf '%s' "$BODY" | grep -qF '<!-- claude-pr-review-summary-v1'; then
       echo "Marker already present in review body — no synthesis needed"
       exit 0
     fi
 
-    # Count per-bucket using sourced regex variables.
-    CRITICAL=$(printf '%s' "$BODY" | grep -cE "$SEVERITY_CRITICAL_RE" || true)
-    HIGH=$(printf '%s' "$BODY"     | grep -cE "$SEVERITY_HIGH_RE"     || true)
-    MEDIUM=$(printf '%s' "$BODY"   | grep -cE "$SEVERITY_MEDIUM_RE"   || true)
-    LOW=$(printf '%s' "$BODY"      | grep -cE "$SEVERITY_LOW_RE"      || true)
+    # Count per-bucket using grep -oE | wc -l (counts matches, not lines).
+    # grep -cE would count lines; a line with two severity tokens counts once, not twice.
+    CRITICAL=$(printf '%s' "$BODY" | grep -oE "$SEVERITY_CRITICAL_RE" | wc -l || true)
+    HIGH=$(printf '%s' "$BODY"     | grep -oE "$SEVERITY_HIGH_RE"     | wc -l || true)
+    MEDIUM=$(printf '%s' "$BODY"   | grep -oE "$SEVERITY_MEDIUM_RE"   | wc -l || true)
+    LOW=$(printf '%s' "$BODY"      | grep -oE "$SEVERITY_LOW_RE"      | wc -l || true)
+
+    # Defensive synthesis: refuse to post 0/0/0/0 unless a corroboration signal
+    # confirms the LLM performed substantive analysis.
+    # A 0/0/0/0 marker on a trivial (zero-diff) PR is legitimate.
+    # A 0/0/0/0 marker on a non-trivial PR with no persona structure is suspect:
+    # the persona may have dropped severity tagging entirely, which would make
+    # the shadow gate post agree:clean on what is actually a persona dropout.
+    if [ "$CRITICAL" -eq 0 ] && [ "$HIGH" -eq 0 ] && [ "$MEDIUM" -eq 0 ] && [ "$LOW" -eq 0 ]; then
+      BODY_LEN=$(printf '%s' "$BODY" | wc -c)
+      HAS_SECTION=$(printf '%s' "$BODY" | grep -cE '^### (Findings|Verdict)' || true)
+      # Diff line count requires the PR diff context; approximate via review body length.
+      # Accept 0/0/0/0 if: body is substantive (>500 chars) OR has persona section headers.
+      # Reject (post error) if body is short AND has no section headers — likely persona dropout.
+      if [ "$BODY_LEN" -lt 500 ] && [ "$HAS_SECTION" -eq 0 ]; then
+        echo "synthesis_skipped:no_corroboration — zero counts but no persona structure detected"
+        gh api "repos/$REPO/statuses/$(gh api repos/$REPO/pulls/$PR_NUMBER --jq .head.sha)" \
+          -X POST \
+          -f state=error \
+          -f description='synthesis_skipped:no_corroboration' \
+          -f context='claude-pr-review/quality-gate-shadow' \
+          -f target_url="$GITHUB_SERVER_URL/$REPO/pull/$PR_NUMBER" 2>/dev/null || true
+        exit 0
+      fi
+    fi
 
     MARKER=$(printf '<!-- claude-pr-review-summary-v1\n{"schemaVersion":1,"findings":{"critical":%d,"high":%d,"medium":%d,"low":%d}}\n-->' \
       "$CRITICAL" "$HIGH" "$MEDIUM" "$LOW")
@@ -163,7 +250,7 @@ Both existing gate steps source this file and replace their inline regex with `$
 
 The following questions must be answered before or during the W3 implementation PR. The plan marks each as either *must resolve before PR opens* or *must resolve during implementation*.
 
-**Q1 — Comment selector validation** (must resolve during implementation). The `updated_at >= REVIEW_START_TIME` selector is proposed but not yet verified against a live run. The implementation PR must run against a synthetic PR, enumerate all `github-actions[bot]` comments, and confirm: (a) exactly one comment has `updated_at >= REVIEW_START_TIME`, (b) that comment is the review body, not a progress artifact. If the selector returns zero or more than one, the implementation must document a content-based fallback (e.g., body contains `## ` heading + known review vocabulary).
+**Q1 — Comment selector validation** (must resolve before PR opens — via Phase 0 spike). The `updated_at >= REVIEW_START_TIME` selector is proposed but not yet verified against a live run. Phase 0 is the checkpoint. No implementation PR opens until the spike finding is posted on #246.
 
 **Q2 — Non-matching counts: LLM marker vs synthesized** (design decision, resolve before PR opens). If the LLM emits a marker but the `grep -qF` guard confirms it, the post-processor exits early. If the LLM emits a marker with wrong counts (e.g., claims `"critical": 0` but the prose contains `🔴 Critical` findings), the guard exits early and the wrong counts stand. Resolution rule: the `grep -qF` guard should check for marker *presence*, not correctness. For now, presence-check is the correct behavior — the shadow gate will emit `agree:*` / `disagree:*` based on both the marker and the prose scan, surfacing the discrepancy. Actively overwriting a present-but-wrong LLM marker is out of scope for W3.
 
@@ -174,11 +261,13 @@ The following questions must be answered before or during the W3 implementation 
 ## Acceptance criteria
 
 - After merge, a real consumer-side review run (verified via siege-web bump using the floating-`v2`-tag pattern) produces `claude-pr-review/quality-gate-shadow = success` (label `agree:clean` or `agree:blocking`) rather than `error / marker_missing`.
-- The synthesized marker's `findings.*` counts match the severity-tagged finding counts in the prose review body, verified by inspection on at least one run containing at least one finding.
+- The synthesized marker's `findings.*` counts match the severity-tagged finding counts in the prose review body, **verified by human spot-check** on at least one run containing at least one finding. This check is mandatory — not optional — because it is the only direct signal that the persona did not silently drop severity tagging on that run.
 - When the LLM does emit the marker correctly, the `grep -qF` guard skips re-synthesis — confirmed by a log line `Marker already present in review body — no synthesis needed`.
 - The authoritative `quality-gate` pass/fail behavior is unchanged — no regression on a clean review (all-zero marker, `success` status) or a blocking review (`failure` status).
 - Both the authoritative gate step and the shadow gate step source `pr-review/lib/severity-regex.sh` — manual diff confirms no inline regex duplication across `action.yml`.
 - The marker block schema matches the persona spec: `schemaVersion: 1`, four required `findings` fields, integers >= 0.
+- When defensive synthesis fires (short body, no persona section headers, all-zero counts), the shadow gate posts `state=error` with `synthesis_skipped:no_corroboration` rather than `agree:clean`.
+- All three comment-selector invocations (synthesis step + both gate steps) use the same comment ID, pinned via `$GITHUB_ENV` after the synthesis step selects it.
 
 ---
 
@@ -193,7 +282,8 @@ Per CLAUDE.md: PRs opened against this repo run `claude-pr-review` at the releas
 1. On the W3 implementation branch, move the floating `v2` tag to point at the branch's HEAD.
 2. Open or push a PR in siege-web that triggers `claude-pr-review`.
 3. Inspect the Actions run log for: `Marker synthesized and appended: ...` in the synthesis step, and `agree:clean` or `agree:blocking` in the shadow gate step summary.
-4. Restore `v2` to `main` HEAD after verification.
+4. For a run containing findings: manually compare the synthesis log line's counts against the prose severity tags in the review body. They must match.
+5. Restore `v2` to `main` HEAD after verification.
 
 **`pull_request_target` trap:** `pull_request_target` resolves the called workflow from the **base branch** of the triggering PR. A siege-web verification PR opened against `main` resolves the reusable workflow at `main` regardless of the head branch. Use the floating-tag approach (step 1 above) — do not open a siege-web PR against `main` expecting it to pick up unreleased composite changes.
 
@@ -221,3 +311,4 @@ Verified against live GitHub state as of 2026-05-08.
 - **W2 (expand `--allowedTools`):** deferred to Phase 2 pending demonstration that `Task`/`Skill` dispatch is supported in `claude-code-action@v1`'s non-interactive SDK invocation and that baked agents are reachable from that surface.
 - **Reclaiming CLI invocation entirely** (running `claude` directly rather than through `claude-code-action@v1`): technically possible, out of scope for recovery.
 - **Hardening `runtime-build.yml` smoke tests** to verify CLI discovery at build time: highest-value post-recovery hardening, deferred.
+- **Persona-tagging dropout detection:** W3 converts `marker_missing` to synthesized markers but cannot distinguish "LLM reviewed and found nothing" from "LLM dropped severity tagging entirely." Defensive synthesis (Option A above) bounds the failure mode at the `0/0/0/0` boundary; exhaustive tagging-dropout detection is a separate concern and out of scope for this plan.
