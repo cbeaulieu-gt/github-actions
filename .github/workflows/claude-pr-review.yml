@@ -51,7 +51,7 @@ jobs:
       group: claude-pr-review-${{ github.repository }}-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     steps:
-      - uses: glitchwerks/github-actions/pr-review@v2
+      - uses: glitchwerks/github-actions/pr-review@issue-242-option-a
         with:
           claude_code_oauth_token: ${{ secrets.claude_code_oauth_token || secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ inputs.model || 'claude-sonnet-4-5' }}

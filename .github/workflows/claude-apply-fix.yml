@@ -45,7 +45,7 @@ jobs:
       group: claude-apply-fix-${{ github.repository }}-${{ inputs.pr_number }}
       cancel-in-progress: false
     steps:
-      - uses: glitchwerks/github-actions/apply-fix@v2
+      - uses: glitchwerks/github-actions/apply-fix@issue-242-option-a
         with:
           pr_number: ${{ inputs.pr_number }}
           fix_diff: ${{ inputs.fix_diff }}
