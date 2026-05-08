@@ -245,10 +245,14 @@ runs:
         # We post against HEAD because consumers' branch protection rules evaluate
         # status checks per the HEAD commit of the PR's head branch.
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        SEVERITY_REGEX_SH: ${{ github.action_path }}/lib/severity-regex.sh
       run: |
         set -euo pipefail
         REPO="$GH_REPOSITORY"
         PR_NUMBER="$PR_NUMBER"
+        # shellcheck source=lib/severity-regex.sh
+        # shellcheck disable=SC1090
+        source "$SEVERITY_REGEX_SH"
 
         # Fetch the most recent comment authored by github-actions[bot]. Claude's
         # review uses use_sticky_comment: true, but in practice each new run
@@ -279,7 +283,8 @@ runs:
         # - Emoji-prefixed forms are unique to bot output and specific enough as-is.
         # - Plain "MAJOR" / "BLOCKING" require markdown bold to avoid matching code
         #   snippets, prose, or unrelated tokens (SUBMAJOR, MAJOR_VERSION, UNBLOCKING).
-        BLOCKER_HITS=$(printf '%s' "$BODY" | grep -E -c '🔴 Critical|Critical \(BLOCKING\)|🟡 High-Priority|\*\*MAJOR\*\*|\*\*BLOCKING\*\*' || true)
+        # Regex sourced from lib/severity-regex.sh (shared with synthesis and shadow gate).
+        BLOCKER_HITS=$(printf '%s' "$BODY" | grep -E -c "$SEVERITY_BLOCKER_RE" || true)
 
         echo "Quality gate scan: $BLOCKER_HITS marker(s) matched in latest sticky comment"
 
@@ -297,6 +302,101 @@ runs:
           -f description="$DESCRIPTION"
         echo "Posted status: context=claude-pr-review/quality-gate state=$STATE"
 
+    - name: Synthesize structured marker via post-processing
+      if: steps.authz.outputs.skip != 'true' && steps.size-check.outputs.skip != 'true' && steps.claude-review.outcome == 'success'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPOSITORY: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        REVIEW_START_TIME: ${{ env.REVIEW_START_TIME }}
+        SEVERITY_REGEX_SH: ${{ github.action_path }}/lib/severity-regex.sh
+      run: |
+        set -euo pipefail
+        # shellcheck source=lib/severity-regex.sh
+        # shellcheck disable=SC1090
+        source "$SEVERITY_REGEX_SH"
+        REPO="$GH_REPOSITORY"
+
+        # Select the bot comment posted/updated during this review run.
+        #
+        # Selector relies on `cancel-in-progress: true` concurrency at the workflow
+        # level (claude-pr-review.yml ~line 50–52). If a future edit weakens that
+        # concurrency block, the prior-run-overlap race S3 from the Phase 0 spike
+        # (https://github.com/glitchwerks/github-actions/pull/246#issuecomment-4409961575)
+        # re-opens and this selector can pick the wrong comment.
+        #
+        # track_progress: true updates the sticky comment in-place, so created_at
+        # may predate REVIEW_START_TIME; filter on updated_at instead.
+        # In practice each new run produces a separate sticky comment (multiple bot
+        # comments accumulate on a PR with multiple pushes — see action.yml line 254).
+        COMMENT_JSON=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
+          --jq "map(select(.user.login == \"github-actions[bot]\") | select(.updated_at >= \"$REVIEW_START_TIME\")) | sort_by(.updated_at) | last // empty" \
+          2>/dev/null || echo "")
+
+        if [ -z "$COMMENT_JSON" ]; then
+          echo "No bot comment updated during this review — skipping marker synthesis"
+          exit 0
+        fi
+
+        BODY=$(printf '%s' "$COMMENT_JSON" | jq -r '.body // ""')
+        COMMENT_ID=$(printf '%s' "$COMMENT_JSON" | jq -r '.id')
+
+        # Pin comment ID for the shadow gate step to avoid replication-lag race.
+        # The shadow gate reads from the same comment W3 just PATCHed, rather than
+        # re-selecting independently and potentially hitting stale API state.
+        echo "SYNTHESIS_COMMENT_ID=$COMMENT_ID" >> "$GITHUB_ENV"
+
+        # Skip if the LLM already emitted the marker correctly.
+        if printf '%s' "$BODY" | grep -qF '<!-- claude-pr-review-summary-v1'; then
+          echo "Marker already present in review body — no synthesis needed"
+          exit 0
+        fi
+
+        # Count per-bucket using grep -oE | wc -l (counts matches, not lines).
+        # grep -cE would count lines; a single line containing two severity tokens
+        # would count as 1 — grep -oE | wc -l counts each token individually.
+        CRITICAL=$(printf '%s' "$BODY" | grep -oE "$SEVERITY_CRITICAL_RE" | wc -l || true)
+        HIGH=$(printf '%s' "$BODY"     | grep -oE "$SEVERITY_HIGH_RE"     | wc -l || true)
+        MEDIUM=$(printf '%s' "$BODY"   | grep -oE "$SEVERITY_MEDIUM_RE"   | wc -l || true)
+        LOW=$(printf '%s' "$BODY"      | grep -oE "$SEVERITY_LOW_RE"      | wc -l || true)
+
+        # Defensive synthesis: refuse to post 0/0/0/0 unless a corroboration signal
+        # confirms the LLM performed substantive analysis.
+        # A 0/0/0/0 marker on a trivial (zero-diff) PR is legitimate.
+        # A 0/0/0/0 marker on a non-trivial PR with no persona structure is suspect:
+        # the persona may have dropped severity tagging entirely, which would make
+        # the shadow gate post agree:clean on what is actually a persona dropout.
+        if [ "$CRITICAL" -eq 0 ] && [ "$HIGH" -eq 0 ] && [ "$MEDIUM" -eq 0 ] && [ "$LOW" -eq 0 ]; then
+          BODY_LEN=$(printf '%s' "$BODY" | wc -c)
+          HAS_SECTION=$(printf '%s' "$BODY" | grep -cE '^### (Findings|Verdict)' || true)
+          # Accept 0/0/0/0 if: body is substantive (>500 chars) OR has persona section headers.
+          # Reject (post error) if body is short AND has no section headers — likely persona dropout.
+          # NOTE: body-length is the primary independent corroborator; section headers are secondary.
+          # Do not tighten the section-header check thinking it is load-bearing — it is not.
+          if [ "$BODY_LEN" -lt 500 ] && [ "$HAS_SECTION" -eq 0 ]; then
+            echo "synthesis_skipped:no_corroboration — zero counts but no persona structure detected"
+            gh api "repos/$REPO/statuses/$HEAD_SHA" \
+              -X POST \
+              -f state=error \
+              -f description='synthesis_skipped:no_corroboration' \
+              -f context='claude-pr-review/quality-gate-shadow' \
+              -f target_url="$GITHUB_SERVER_URL/$REPO/pull/$PR_NUMBER" 2>/dev/null || true
+            exit 0
+          fi
+        fi
+
+        MARKER=$(printf '<!-- claude-pr-review-summary-v1\n{"schemaVersion":1,"findings":{"critical":%d,"high":%d,"medium":%d,"low":%d}}\n-->' \
+          "$CRITICAL" "$HIGH" "$MEDIUM" "$LOW")
+
+        NEW_BODY=$(printf '%s\n\n%s' "$BODY" "$MARKER")
+
+        gh api "repos/$REPO/issues/comments/$COMMENT_ID" \
+          -X PATCH \
+          -f body="$NEW_BODY"
+        echo "Marker synthesized and appended: critical=$CRITICAL high=$HIGH medium=$MEDIUM low=$LOW"
+
     - name: Quality gate — structured marker (advisory shadow)
       if: steps.authz.outputs.skip != 'true' && steps.size-check.outputs.skip != 'true' && steps.claude-review.outcome == 'success'
       shell: bash
@@ -309,19 +409,36 @@ runs:
         # directory at runtime. The $GITHUB_ACTION_PATH variable is set by the
         # Actions runner to the directory containing this action.yml file.
         PARSE_MARKER_SH: ${{ github.action_path }}/lib/parse-marker.sh
+        SEVERITY_REGEX_SH: ${{ github.action_path }}/lib/severity-regex.sh
+        # SYNTHESIS_COMMENT_ID is written to $GITHUB_ENV by the synthesis step above
+        # when it successfully selects and patches a comment. When set, this step
+        # fetches that specific comment ID directly to avoid re-selecting and
+        # potentially hitting API replication lag on the just-patched body.
+        # shellcheck disable=SC2016
+        SYNTHESIS_COMMENT_ID: ${{ env.SYNTHESIS_COMMENT_ID }}
       run: |
         set -euo pipefail
         REPO="$GH_REPOSITORY"
+        # shellcheck source=lib/severity-regex.sh
+        # shellcheck disable=SC1090
+        source "$SEVERITY_REGEX_SH"
 
-        # --- Fetch the latest github-actions[bot] sticky comment (same logic as the
-        #     existing quality-gate step — single source of truth for $BODY) ----------
-        #
-        # IMPORTANT (#184 fix): sort_by(.updated_at) | last picks the most-recently-
-        # edited bot comment; the API returns created_at ASC by default and does not
-        # honour sort/direction params.
-        BODY=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
-          --jq 'map(select(.user.login == "github-actions[bot]")) | sort_by(.updated_at) | last | .body // ""' \
-          2>/dev/null || echo "")
+        # --- Fetch the review comment body. ------------------------------------------
+        # If the synthesis step pinned a comment ID to $GITHUB_ENV, use it directly
+        # (avoids replication-lag race on the just-PATCHed body). Otherwise fall back
+        # to the sort_by(updated_at)|last selector.
+        if [ -n "${SYNTHESIS_COMMENT_ID:-}" ]; then
+          BODY=$(gh api "repos/$REPO/issues/comments/$SYNTHESIS_COMMENT_ID" \
+            --jq '.body // ""' 2>/dev/null || echo "")
+          echo "Shadow gate: fetching pinned comment id=$SYNTHESIS_COMMENT_ID"
+        else
+          # IMPORTANT (#184 fix): sort_by(.updated_at) | last picks the most-recently-
+          # edited bot comment; the API returns created_at ASC by default and does not
+          # honour sort/direction params.
+          BODY=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
+            --jq 'map(select(.user.login == "github-actions[bot]")) | sort_by(.updated_at) | last | .body // ""' \
+            2>/dev/null || echo "")
+        fi
 
         # Skip entirely when there is no bot comment (review did not complete).
         if [ -z "$BODY" ]; then
@@ -329,8 +446,9 @@ runs:
           exit 0
         fi
 
-        # --- Prose-regex result (same regex as authoritative gate) ------------------
-        BLOCKER_HITS=$(printf '%s' "$BODY" | grep -E -c '🔴 Critical|Critical \(BLOCKING\)|🟡 High-Priority|\*\*MAJOR\*\*|\*\*BLOCKING\*\*' || true)
+        # --- Prose-regex result (sourced from lib/severity-regex.sh) ----------------
+        # Regex sourced above; $SEVERITY_BLOCKER_RE is the combined blocker class.
+        BLOCKER_HITS=$(printf '%s' "$BODY" | grep -E -c "$SEVERITY_BLOCKER_RE" || true)
         if [ "$BLOCKER_HITS" -gt "0" ]; then
           PROSE_RESULT="blocking"
         else
