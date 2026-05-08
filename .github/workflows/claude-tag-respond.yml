@@ -203,6 +203,23 @@ jobs:
         shell: bash
         run: echo "RUN_START_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
 
+      - name: Install persona for claude-code-action CLI
+        shell: bash
+        run: |
+          # GitHub Actions overrides HOME=/github/home in container jobs, discarding
+          # the image's baked HOME=/opt/claude. The fresh CLI installed by
+          # claude-code-action@v1 reads its user-level CLAUDE.md from
+          # $HOME/.claude/CLAUDE.md — a path that does not exist by default.
+          # Copy the baked persona to where the runtime CLI looks.
+          # Tracking: https://github.com/glitchwerks/github-actions/issues/242
+          if [ -f /opt/claude/.claude/CLAUDE.md ]; then
+            mkdir -p "$HOME/.claude"
+            cp /opt/claude/.claude/CLAUDE.md "$HOME/.claude/CLAUDE.md"
+            echo "Persona installed: $(wc -l < "$HOME/.claude/CLAUDE.md") lines from /opt/claude/.claude/CLAUDE.md"
+          else
+            echo "::warning::No baked persona at /opt/claude/.claude/CLAUDE.md — running without overlay persona"
+          fi
+
       - uses: anthropics/claude-code-action@v1
         env:
           # Surfaces the router's mode decision to the verb-specific overlay
