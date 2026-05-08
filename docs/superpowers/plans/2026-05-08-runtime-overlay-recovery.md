@@ -1,147 +1,108 @@
-# Runtime Overlay Recovery Plan
+# 2026-05-08 — Marker Synthesis via Post-Processing (Phase 1 of runtime overlay recovery)
 
-**Status: DRAFT — pending review**
+**Status: DRAFT — pending second inquisitor pass**
 
 | Field | Value |
 |---|---|
 | Created | 2026-05-08 |
-| Issues | [#242](https://github.com/glitchwerks/github-actions/issues/242), [#245](https://github.com/glitchwerks/github-actions/issues/245) |
-| Closes | #245 via W1+W2; #242 via W3 |
-| Related | glitchwerks/siege-web#304, glitchwerks/siege-web#308, glitchwerks/siege-web#309 |
+| Phase | 1 of 2 |
+| Issues | [#242](https://github.com/glitchwerks/github-actions/issues/242) (closes when W3 lands), [#245](https://github.com/glitchwerks/github-actions/issues/245) (remains open — W1+W2 verification tracker) |
+| Scope | W3 only — marker post-processing |
+
+---
+
+## Why W1 and W2 are deferred
+
+The first inquisitor pass (verdict: BLOCK) returned three Critical charges. Charges #1 and #2 identified that W1 (bridge baked content into discovery path) and W2 (expand `--allowedTools`) both rest on unverified claims about `claude-code-action@v1` internals:
+
+- **W1** assumes `$HOME/.claude/{agents,skills,plugins}` is the CLI's discovery path for those resource types. The #245 evidence proves only that `settings.json` goes there. Agent/skill/plugin discovery may use a different loader path. Zero evidence was presented for the broader claim.
+- **W2** assumes `Task` is the right tool name for sub-agent dispatch inside the action's non-interactive SDK invocation, and that agents are invocable from that surface at all. Also undemonstrated.
+
+W3 (marker post-processing) survives the cut because it operates entirely on the posted review body using patterns the authoritative gate already proves work. It does not depend on any unverified claude-code-action internals.
+
+**Phase 2 (deferred): bridge baked content and expand allowlist.** Issue [#245](https://github.com/glitchwerks/github-actions/issues/245) tracks the verification work needed before W1 and W2 can be safely planned — specifically, demonstrating from the `@anthropic-ai/claude-code` CLI source or a reproducible invocation that agents/skills/plugins are discovered from `$HOME/.claude/` and that sub-agent dispatch via `Task` is supported in non-interactive mode.
+
+As the inquisitor noted in Charge #7 (sequencing): "W3-leading is exactly what we're now doing" — landing the deterministic post-processor first removes one variable from the W1+W2 verification matrix and protects #242 closure from regressing during that subsequent verification window.
 
 ---
 
 ## Context
 
-### Architectural finding
+### What is broken
 
-The runtime overlay design bakes agents, skills, plugins, and hooks at `/opt/claude/.claude/` inside each verb-specific container image. The design intent is that the CLI, when invoked by `claude-code-action@v1`, discovers that content and makes it available for invocation. That intent does not hold in practice.
+The structured-marker output contract (the `<!-- claude-pr-review-summary-v1` HTML-comment block) is specified in the review overlay's CLAUDE.md as a required LLM output. The LLM's compliance is inconsistent: the shadow gate has reported `marker_missing` on every run since #185 Phase 2 shipped (issue #242). The `APPEND_SYSTEM_PROMPT` position means the instruction is appended rather than authoritative, and turn-budget pressure can truncate the response before the marker is emitted.
 
-Three independent sources — the GHA runner `docker create` log, the `claude-code-action@v1` source (`setup-claude-code-settings.ts`), and the live run log from siege-web [run 25567112823](https://github.com/glitchwerks/siege-web/actions/runs/25567112823) — establish the same fact: **GitHub Actions unconditionally injects `-e HOME=/github/home` at container startup**, overriding the image's `ENV HOME=/opt/claude`. Every component of `claude-code-action@v1` that touches the filesystem — binary installation, settings-path resolution, `settingSources` — derives its paths from `os.homedir()` at call time, which reads the overridden `HOME`. The CLI's `"user"` settings source therefore resolves to `/github/home/.claude/`, a directory created fresh by the action's own setup step. It contains only a generated `settings.json`. The baked tree at `/opt/claude/.claude/` is never consulted. (Full proof: [#245 comment](https://github.com/glitchwerks/github-actions/issues/245#issuecomment-4408160311).)
+### Why W3 fixes it
 
-A secondary delivery failure compounds this: the `--allowedTools` list passed to `claude-code-action@v1` in `pr-review/action.yml` is scoped to `Bash(gh pr diff:*)`, `Bash(gh pr review:*)`, and `Bash(gh pr view:*)`. It does not include `Task` or `Skill`. Even if baked agents and skills were on the discovery path, the LLM could not invoke them — they would not be in the allowed-tools surface.
-
-The `APPEND_SYSTEM_PROMPT` mechanism (Option A, tested via siege-web PR #309) and the `$HOME/.claude/CLAUDE.md` copy approach (Option B, shipped as v2.4.2 in PR #243) both improve persona delivery, but neither restores the baked agent/skill surface.
-
-The `marker_missing` failure (#242) is a direct consequence: the persona's strict-format output contract (the `<!-- claude-pr-review-summary-v1` HTML-comment block) is appended as a prompt instruction, not enforced with authority, and the LLM's compliance is inconsistent. The structured-marker shadow gate introduced in #185 Phase 2 has therefore never moved off `marker_missing`.
-
-### What this is NOT
-
-The recovery is a delivery fix, not a redesign. The runtime overlay design's intent — verb-scoped agent surfaces, the "different eyes" guarantee, the `expected.yaml` inventory contract — remains sound. Filesystem isolation is real and load-bearing. The three workstreams below repair the delivery gap; they do not revisit the architecture.
+W3 stops relying on the LLM to emit the marker. A post-processing step, inserted after `claude-code-action@v1` completes, reads the review body already posted by the action and synthesizes the marker deterministically from the prose content using the same severity-counting regex the authoritative gate already uses. The marker is appended to the review comment via a PATCH. If the LLM happened to emit the marker correctly, the step skips (guarded by `grep -qF`).
 
 ---
 
-## W1 — Bridge baked content into CLI discovery path
+## W3 — Marker synthesis via post-processing
 
-### Problem
+### Severity buckets (from persona spec, verbatim)
 
-`/opt/claude/.claude/{agents,skills,plugins,hooks,commands}/` is never on the CLI's discovery path because `HOME` is overridden at container start. The bridge copies that content into `$HOME/.claude/` before the action's setup step writes `settings.json`, so the CLI's `"user"` settings source sees the baked surface.
+`runtime/overlays/review/CLAUDE.md` lines 133–136 define the four required findings fields and their mapping to prose markers:
 
-### Deliverable
+- `findings.critical` — count of **🔴 Critical (BLOCKING)** findings
+- `findings.high` — count of **🟡 High-Priority (MAJOR)** findings
+- `findings.medium` — count of **🟢 Medium** findings
+- `findings.low` — count of **Nit** findings
 
-A shell step, added immediately after `Install persona for claude-code-action CLI` in each action and workflow that invokes `claude-code-action@v1`:
+These are the authoritative buckets. The four-bucket split is not invented — it is the schema mandated by the persona spec.
 
-```yaml
-- name: Bridge baked overlay content into CLI discovery path
-  shell: bash
-  run: |
-    BAKED_DIR=/opt/claude/.claude
-    TARGET_DIR="$HOME/.claude"
-    mkdir -p "$TARGET_DIR"
-    for subdir in agents skills plugins hooks commands; do
-      if [ -d "$BAKED_DIR/$subdir" ]; then
-        # --no-clobber: don't overwrite the settings.json or CLAUDE.md
-        # already written by the Install persona step.
-        cp -r --no-clobber "$BAKED_DIR/$subdir" "$TARGET_DIR/"
-        echo "Bridged: $subdir"
-      fi
-    done
-```
+### Authoritative gate regex (source of truth)
 
-**Files to update:**
-
-| File | Step insertion point |
-|---|---|
-| `pr-review/action.yml` | After `Install persona for claude-code-action CLI` |
-| `lint-failure/action.yml` | After the equivalent persona-install step (or at step start if absent) |
-| `lint-diagnose/action.yml` | Same |
-| `tag-claude/action.yml` | Same |
-| `.github/workflows/claude-ci-failure.yml` | Before the `claude-code-action@v1` step |
-| `.github/workflows/claude-tag-respond.yml` | Before the `claude-code-action@v1` step in the `dispatch` job |
-
-The `--no-clobber` flag is critical: `pr-review/action.yml` already writes `$HOME/.claude/CLAUDE.md` via the `Install persona` step and `$HOME/.claude/settings.json` is written by the action's own setup. Neither must be overwritten.
-
-### Acceptance criteria
-
-- A review run's log shows `Bridged: agents`, `Bridged: skills`, `Bridged: plugins`.
-- The CLI's startup output (visible via `ACTIONS_STEP_DEBUG=true`) lists at least one agent from `runtime/overlays/review/expected.yaml` in the available-tools / registered-agents enumeration.
-- `cp -r --no-clobber` leaves `$HOME/.claude/CLAUDE.md` (written by the prior persona-install step) unchanged.
-
----
-
-## W2 — Expand `--allowedTools` per overlay
-
-### Problem
-
-The `--allowedTools` string in `pr-review/action.yml` restricts Claude to three `Bash` patterns:
+The severity regex currently lives inline in `pr-review/action.yml` at two locations (line 282, line 333 — identical):
 
 ```
-Bash(gh pr diff:*),Bash(gh pr review:*),Bash(gh pr view:*)
+grep -E -c '🔴 Critical|Critical \(BLOCKING\)|🟡 High-Priority|\*\*MAJOR\*\*|\*\*BLOCKING\*\*'
 ```
 
-`Task` and `Skill` are absent. Even after W1 bridges the baked agent surface into the discovery path, the LLM cannot invoke those agents. The tool-allowlist is the last delivery barrier.
+This is a **single combined blocker class** (critical + high together) used to determine pass/fail. The four-bucket post-processor must map to this same set of patterns. The derivation:
 
-### Deliverable
+| Bucket | Patterns | Maps to authoritative `BLOCKER_HITS` |
+|---|---|---|
+| `critical` | `🔴 Critical`, `Critical \(BLOCKING\)`, `\*\*BLOCKING\*\*` | yes |
+| `high` | `🟡 High-Priority`, `\*\*MAJOR\*\*` | yes |
+| `medium` | `🟢 Medium` | no (advisory only) |
+| `low` | `\bNit\b` | no (advisory only) |
 
-Per-overlay `--allowedTools` expansion. The review composite already has a narrow Bash scope that is correct for its read-only posture; we extend it rather than replace it.
+Because the gate regex is **inline at two locations** in `action.yml`, extracting it to a shared file is a mandatory W3 deliverable, not a deferred refactor. If W3 ships inline regexes instead, there are now three locations to keep in sync. See Deliverables below.
 
-**`pr-review/action.yml` (review overlay):**
+### Comment-target identification
 
+The inquisitor's Charge #3 flagged that the "PATCH `last by updated_at`" approach is unsafe when `track_progress: true` is set, because progress comments can interleave after the review summary.
+
+Reading `claude-code-action@v1` source (`src/github/operations/comments/create-initial.ts`, `src/entrypoints/run.ts`):
+
+- With `use_sticky_comment: true`, the action creates one comment at job start (the "Claude Code is working…" placeholder) and updates it in-place at job end via an internal `commentId` variable.
+- With `track_progress: true`, intermediate tool-call progress is appended to that same comment body — it is not a separate comment. The final review body therefore lives in the same comment the action created at start.
+- The `commentId` is tracked internally by the action's `run.ts` `finally` block. **It is not exposed as a step output.** The action's `outputs:` block lists `execution_file`, `branch_name`, `github_token`, `structured_output`, and `session_id` — no `comment_id`.
+
+**Consequence:** W3 cannot obtain the comment ID from `${{ steps.claude-review.outputs.comment_id }}` because that output does not exist. The fallback strategy must be a content-based selector.
+
+**Chosen approach:** Fetch all `github-actions[bot]` comments on the PR, select the one whose body contains the review sentinel (`## ` heading or a known review marker, absent which fall back to the longest bot comment posted after `REVIEW_START_TIME`). This is more robust than a pure temporal selector because it anchors on content. The specific selector is: longest bot comment with `created_at >= REVIEW_START_TIME`, since `track_progress: true` updates (not creates) the sticky comment — the comment's `created_at` predates `REVIEW_START_TIME`, but its `updated_at` is after. Select by `updated_at >= REVIEW_START_TIME AND user.login == "github-actions[bot]"`, picking the single result. If multiple match (edge case: prior run commented right before this run started), take the last by `updated_at`.
+
+This remains an open question until verified against a live run. The implementation PR must enumerate all `github-actions[bot]` comments on a synthetic PR at a known post-`REVIEW_START_TIME` timestamp and confirm exactly one comment matches the selector. If more than one matches, the implementation must add a content-based tie-breaker (e.g., body contains the review's verdict line pattern `## (APPROVE|BLOCK)`).
+
+### Deliverables
+
+**Deliverable A: `pr-review/lib/severity-regex.sh`** — extract the shared severity regex from inline bash into a sourceable shell fragment. Both the authoritative gate step (line 282) and the shadow gate step (line 333) in `action.yml` currently duplicate the same regex string. W3 makes this three copies unless extraction happens first. The file should export four variables:
+
+```bash
+# severity-regex.sh — source this file; do not execute directly.
+# Provides SEVERITY_BLOCKER_RE (combined) and per-bucket patterns.
+SEVERITY_BLOCKER_RE='🔴 Critical|Critical \(BLOCKING\)|🟡 High-Priority|\*\*MAJOR\*\*|\*\*BLOCKING\*\*'
+SEVERITY_CRITICAL_RE='🔴 Critical|Critical \(BLOCKING\)|\*\*BLOCKING\*\*'
+SEVERITY_HIGH_RE='🟡 High-Priority|\*\*MAJOR\*\*'
+SEVERITY_MEDIUM_RE='🟢 Medium'
+SEVERITY_LOW_RE='\bNit\b'
 ```
---allowedTools "Task,Skill,Bash(gh pr diff:*),Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh api:*)"
-```
 
-Rationale: `Task` enables sub-agent dispatch to `inquisitor` and the `pr-review-toolkit` agents; `Skill` enables skill invocation; `Bash(gh api:*)` is needed by the persona's sub-agents for targeted API calls. The review overlay's `must_not_contain` in `expected.yaml` enforces that write-side agents (`code-writer`, `apply-fix`-adjacent) are not on disk — filesystem isolation remains the "different eyes" enforcement layer.
+Both existing gate steps source this file and replace their inline regex with `$SEVERITY_BLOCKER_RE`. The post-processor uses the four per-bucket variables.
 
-**`tag-claude/action.yml` and `claude-tag-respond.yml` (fix + explain overlays):**
-
-Fix overlay additionally needs:
-
-```
-Task,Skill,Bash(git:*),Bash(gh pr:*),Bash(gh api:*),Bash(.../git-push.sh:*)
-```
-
-Explain overlay is read-only (same scope as review, no commit/push Bash patterns):
-
-```
-Task,Skill,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*)
-```
-
-These are initial scopes; the implementation PR should verify each against the relevant `expected.yaml` to confirm the agent set's actual tool needs.
-
-**CI-failure and lint-failure composites:**
-
-These use the fix overlay. Apply the fix-overlay allowlist above.
-
-### Acceptance criteria
-
-- A review run's `ALLOWED_TOOLS` log line (emitted by `claude-code-action@v1`) includes `Task` and `Skill`.
-- The review does not regress: the read-only Bash patterns remain present; no write-side Bash patterns (`git commit`, `git push`, `git apply`) appear in the review overlay's expanded list.
-- `expected.yaml`'s `must_not_contain` check continues to pass in `runtime-build.yml` — confirming filesystem isolation is enforced at build time alongside the allowlist enforcement at run time.
-
----
-
-## W3 — Marker synthesis via post-processing (closes #242)
-
-### Problem
-
-The structured-marker output contract (the `<!-- claude-pr-review-summary-v1` HTML-comment block) is specified in the review overlay's CLAUDE.md as a required LLM output. The LLM's compliance is inconsistent: the shadow gate has reported `marker_missing` on every run since #185 Phase 2 shipped (#242). The `APPEND_SYSTEM_PROMPT` position means the instruction is appended rather than authoritative, and LLM turn-budget pressure can truncate the response before the marker is emitted.
-
-The fix is to stop relying on the LLM to emit the marker and instead synthesize it deterministically in a post-processing step that runs after `claude-code-action@v1`.
-
-### Deliverable
-
-A post-processing step in `pr-review/action.yml`, inserted after the `Quality gate — post claude-pr-review/quality-gate status` step and before the `Quality gate — structured marker (advisory shadow)` step:
+**Deliverable B: post-processing step in `pr-review/action.yml`** — inserted between the `Quality gate — post claude-pr-review/quality-gate status` step and the `Quality gate — structured marker (advisory shadow)` step. Illustrative shape (implementation PR must confirm comment selector against a live run):
 
 ```yaml
 - name: Synthesize structured marker via post-processing
@@ -151,41 +112,40 @@ A post-processing step in `pr-review/action.yml`, inserted after the `Quality ga
     GH_TOKEN: ${{ github.token }}
     GH_REPOSITORY: ${{ github.repository }}
     PR_NUMBER: ${{ github.event.pull_request.number }}
+    REVIEW_START_TIME: ${{ env.REVIEW_START_TIME }}
+    SEVERITY_REGEX_SH: ${{ github.action_path }}/lib/severity-regex.sh
   run: |
     set -euo pipefail
+    # shellcheck source=lib/severity-regex.sh
+    source "$SEVERITY_REGEX_SH"
     REPO="$GH_REPOSITORY"
 
-    # Fetch latest bot comment (same fetch pattern as quality-gate step)
-    BODY=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
-      --jq 'map(select(.user.login == "github-actions[bot]")) | sort_by(.updated_at) | last | .body // ""' \
+    # Select the bot comment posted/updated during this review run.
+    # track_progress: true updates the sticky comment in-place, so created_at
+    # may predate REVIEW_START_TIME; filter on updated_at instead.
+    COMMENT_JSON=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
+      --jq "map(select(.user.login == \"github-actions[bot]\") | select(.updated_at >= \"$REVIEW_START_TIME\")) | sort_by(.updated_at) | last // empty" \
       2>/dev/null || echo "")
 
-    [ -z "$BODY" ] && { echo "No bot comment — skipping marker synthesis"; exit 0; }
+    [ -z "$COMMENT_JSON" ] && { echo "No bot comment updated during this review — skipping marker synthesis"; exit 0; }
 
-    # Skip if marker already present (LLM happened to emit it correctly)
+    BODY=$(printf '%s' "$COMMENT_JSON" | jq -r '.body // ""')
+    COMMENT_ID=$(printf '%s' "$COMMENT_JSON" | jq -r '.id')
+
+    # Skip if the LLM already emitted the marker correctly.
     if printf '%s' "$BODY" | grep -qF '<!-- claude-pr-review-summary-v1'; then
       echo "Marker already present in review body — no synthesis needed"
       exit 0
     fi
 
-    # Count severity markers using the same regex as the authoritative gate
-    CRITICAL=$(printf '%s' "$BODY" | grep -cE '🔴 Critical|Critical \(BLOCKING\)|\*\*BLOCKING\*\*' || true)
-    HIGH=$(printf '%s' "$BODY"     | grep -cE '🟡 High-Priority|\*\*MAJOR\*\*' || true)
-    MEDIUM=$(printf '%s' "$BODY"   | grep -cE '🟢 Medium' || true)
-    LOW=$(printf '%s' "$BODY"      | grep -cE '\bNit\b' || true)
+    # Count per-bucket using sourced regex variables.
+    CRITICAL=$(printf '%s' "$BODY" | grep -cE "$SEVERITY_CRITICAL_RE" || true)
+    HIGH=$(printf '%s' "$BODY"     | grep -cE "$SEVERITY_HIGH_RE"     || true)
+    MEDIUM=$(printf '%s' "$BODY"   | grep -cE "$SEVERITY_MEDIUM_RE"   || true)
+    LOW=$(printf '%s' "$BODY"      | grep -cE "$SEVERITY_LOW_RE"      || true)
 
     MARKER=$(printf '<!-- claude-pr-review-summary-v1\n{"schemaVersion":1,"findings":{"critical":%d,"high":%d,"medium":%d,"low":%d}}\n-->' \
       "$CRITICAL" "$HIGH" "$MEDIUM" "$LOW")
-
-    # Fetch the comment ID to PATCH
-    COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
-      --jq 'map(select(.user.login == "github-actions[bot]")) | sort_by(.updated_at) | last | .id' \
-      2>/dev/null || echo "")
-
-    if [ -z "$COMMENT_ID" ]; then
-      echo "::warning::Could not resolve comment ID for marker append"
-      exit 0
-    fi
 
     NEW_BODY=$(printf '%s\n\n%s' "$BODY" "$MARKER")
 
@@ -195,130 +155,69 @@ A post-processing step in `pr-review/action.yml`, inserted after the `Quality ga
     echo "Marker synthesized and appended: critical=$CRITICAL high=$HIGH medium=$MEDIUM low=$LOW"
 ```
 
-**Parser alignment.** The severity-counting regexes in the post-processor and in the authoritative quality-gate step (`Quality gate — post claude-pr-review/quality-gate status`) must agree exactly. The implementation PR should extract the shared regex into a sourced shell fragment (e.g., `pr-review/lib/severity-regex.sh`) used by both steps, so future regex changes cannot desync them.
-
-**`parse-marker.sh` compatibility.** The synthesized marker has the same format as an LLM-emitted marker. `parse-marker.sh` does not need changes — the shadow gate step reads whatever is in the comment body, LLM-authored or synthesized.
-
-### Acceptance criteria
-
-- The shadow gate's `MARKER_OUTCOME` transitions from `marker_missing` to `clean` or `blocking` (whichever is correct for the review's severity content).
-- The synthesized marker's `findings.*` counts match the severity-marker counts in the review body prose — verified by inspection on a run with at least one finding of each severity level.
-- When the LLM does emit the marker correctly, the `grep -qF` guard skips re-synthesis.
-- The authoritative gate (`claude-pr-review/quality-gate`) and the shadow gate (`claude-pr-review/quality-gate-shadow`) agree (same `findings.critical + findings.high > 0` result) for the same review body.
+**`parse-marker.sh` compatibility.** The synthesized marker uses the same format as an LLM-emitted marker. The shadow gate step reads whatever is in the comment body and does not distinguish LLM-authored from synthesized. No changes to `parse-marker.sh`.
 
 ---
 
-## Sequencing and dependencies
+## Open questions
 
-```
-W1 ──┐
-     ├── single PR (#246 or similar) ── merge ── verify in siege-web
-W2 ──┘
+The following questions must be answered before or during the W3 implementation PR. The plan marks each as either *must resolve before PR opens* or *must resolve during implementation*.
 
-W3 ── independent PR ── verify in siege-web
-```
+**Q1 — Comment selector validation** (must resolve during implementation). The `updated_at >= REVIEW_START_TIME` selector is proposed but not yet verified against a live run. The implementation PR must run against a synthetic PR, enumerate all `github-actions[bot]` comments, and confirm: (a) exactly one comment has `updated_at >= REVIEW_START_TIME`, (b) that comment is the review body, not a progress artifact. If the selector returns zero or more than one, the implementation must document a content-based fallback (e.g., body contains `## ` heading + known review vocabulary).
 
-W1 and W2 address the same delivery gap (baked content not reaching the CLI) and should ship together in a single PR. They have no dependency on W3.
+**Q2 — Non-matching counts: LLM marker vs synthesized** (design decision, resolve before PR opens). If the LLM emits a marker but the `grep -qF` guard confirms it, the post-processor exits early. If the LLM emits a marker with wrong counts (e.g., claims `"critical": 0` but the prose contains `🔴 Critical` findings), the guard exits early and the wrong counts stand. Resolution rule: the `grep -qF` guard should check for marker *presence*, not correctness. For now, presence-check is the correct behavior — the shadow gate will emit `agree:*` / `disagree:*` based on both the marker and the prose scan, surfacing the discrepancy. Actively overwriting a present-but-wrong LLM marker is out of scope for W3.
 
-W3 addresses the marker-synthesis problem independently. It can be authored in parallel with W1+W2 and merged in either order, though merging W1+W2 first is preferred so the verification baseline (W3 verification) includes the corrected agent surface.
+**Q3 — Regex correctness for non-emoji forms** (verify during implementation). The per-bucket regex splits `**BLOCKING**` into `critical` and `**MAJOR**` into `high`. The authoritative gate combines both into a single blocker class. The split must be verified: a review body containing only `**MAJOR**` should produce `findings.high >= 1` and `findings.critical == 0`, and the shadow gate's `agree:blocking` should fire (because `BLOCKER_HITS` is non-zero). Run manually or in a test PR with a synthetic review body.
 
-**All three workstreams must be verified against siege-web pre-merge** using the floating-tag or branch-ref verification pattern (see Verification Strategy below) before the v2.4.3 release tag is cut.
+---
+
+## Acceptance criteria
+
+- After merge, a real consumer-side review run (verified via siege-web bump using the floating-`v2`-tag pattern) produces `claude-pr-review/quality-gate-shadow = success` (label `agree:clean` or `agree:blocking`) rather than `error / marker_missing`.
+- The synthesized marker's `findings.*` counts match the severity-tagged finding counts in the prose review body, verified by inspection on at least one run containing at least one finding.
+- When the LLM does emit the marker correctly, the `grep -qF` guard skips re-synthesis — confirmed by a log line `Marker already present in review body — no synthesis needed`.
+- The authoritative `quality-gate` pass/fail behavior is unchanged — no regression on a clean review (all-zero marker, `success` status) or a blocking review (`failure` status).
+- Both the authoritative gate step and the shadow gate step source `pr-review/lib/severity-regex.sh` — manual diff confirms no inline regex duplication across `action.yml`.
+- The marker block schema matches the persona spec: `schemaVersion: 1`, four required `findings` fields, integers >= 0.
 
 ---
 
 ## Verification strategy
 
-### Pattern: floating-tag or branch-ref in siege-web
+### Dogfooding non-signal
 
-The standard pre-merge verification pattern for this repo:
+Per CLAUDE.md: PRs opened against this repo run `claude-pr-review` at the released `@v2` tag, not the local branch's composite action changes. The W3 implementation PR's own dogfood run is **non-signal** for verifying marker synthesis. Do not interpret a clean dogfood run as confirmation that W3 works.
 
-1. On the implementation branch (e.g., `issue-245-recovery`), move the floating `v2` tag to point at the branch's HEAD, OR configure siege-web's caller workflow to reference the branch directly (`glitchwerks/github-actions/.github/workflows/claude-pr-review.yml@issue-245-recovery`).
-2. Open or push a PR in siege-web that will trigger `claude-pr-review`.
-3. Inspect the Actions run log for the smoking-gun lines below.
+### Authoritative verification: siege-web with floated `v2`
+
+1. On the W3 implementation branch, move the floating `v2` tag to point at the branch's HEAD.
+2. Open or push a PR in siege-web that triggers `claude-pr-review`.
+3. Inspect the Actions run log for: `Marker synthesized and appended: ...` in the synthesis step, and `agree:clean` or `agree:blocking` in the shadow gate step summary.
 4. Restore `v2` to `main` HEAD after verification.
 
-**Caution — the `pull_request_target` resolution trap:** `pull_request_target` resolves the called workflow from the **base branch** of the triggering PR, not the head branch. This means a siege-web verification PR opened against `main` will resolve the reusable workflow at `main` regardless of the head branch's workflow file. To test a pre-merge composite, either (a) use the floating-tag approach above, or (b) use a siege-web branch whose base is also a branch pointing at the test composite. Do not push a siege-web PR against `main` and expect it to pick up the unreleased composite changes — it won't. This trap caused the failed Option A verification in glitchwerks/siege-web#309.
-
-### Per-workstream smoking-gun log lines
-
-**W1 (bridge):**
-
-With `ACTIONS_STEP_DEBUG=true` on the siege-web Actions run:
-
-```
-Bridged: agents
-Bridged: skills
-Bridged: plugins
-```
-
-Visible in the `Bridge baked overlay content into CLI discovery path` step log. Additionally, the Claude CLI startup section should enumerate `inquisitor` (or another agent from `expected.yaml`) in its registered-agents list.
-
-**W2 (allowlist):**
-
-In the `claude-code-action@v1` step log, the `ALLOWED_TOOLS` line emitted by `run.ts`:
-
-```
-ALLOWED_TOOLS: Task,Skill,Bash(gh pr diff:*),Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh api:*)
-```
-
-**W3 (marker synthesis):**
-
-In the `Synthesize structured marker via post-processing` step log:
-
-```
-Marker synthesized and appended: critical=N high=N medium=N low=N
-```
-
-And in the shadow gate step's summary table:
-
-```
-| Structured marker | `clean` |   (or `blocking` — either is success; `marker_missing` is failure)
-```
-
-The siege-web `claude-pr-review/quality-gate-shadow` commit status should show `success` (agree:clean or agree:blocking) rather than `error / marker_missing`.
+**`pull_request_target` trap:** `pull_request_target` resolves the called workflow from the **base branch** of the triggering PR. A siege-web verification PR opened against `main` resolves the reusable workflow at `main` regardless of the head branch. Use the floating-tag approach (step 1 above) — do not open a siege-web PR against `main` expecting it to pick up unreleased composite changes.
 
 ---
 
 ## Existing artifact cleanup
 
-| Artifact | Action | Rationale |
+Verified against live GitHub state as of 2026-05-08.
+
+| Artifact | State | Note |
 |---|---|---|
-| PR #244 (`issue-242-option-a` branch) | Close in favor of W1+W2+W3 PRs | Contains Option A `APPEND_SYSTEM_PROMPT` + delimiter hardening; useful as reference but the approach is superseded. The verification-only commit (`1602470`) is not needed. If reusing the branch as W1+W2 foundation, rebase selectively. |
-| glitchwerks/siege-web PR #309 | Close | Verification scaffolding for Option A; result was negative for marker delivery but informed the architectural finding in #245. Close with a reference to this plan. |
-| glitchwerks/siege-web issue #308 | Close | Tracked the #309 verification run. Close once #309 is closed. |
-| glitchwerks/siege-web issue #304 | Close | Tracked the v2.4.1 → v2.4.2 bump. The bump shipped but did not fix `marker_missing`; superseded by v2.4.3 once W1+W2+W3 land. |
-| glitchwerks/siege-web PR #305 | Close | The v2.4.2 bump PR itself. Already merged; close the corresponding issue (#304) rather than the PR. |
-| github-actions v2.4.2 release | Leave as-is | It is effectively a no-op release (persona-copy step only; baked content still orphaned) but is doing no harm. v2.4.3 will be the recovery release. |
-| github-actions issue #242 | Leave open | Tracks `marker_missing` specifically. Closes when W3 lands and the shadow gate transitions off `error / marker_missing`. |
-| github-actions issue #245 | Leave open | Closes when W1+W2 land (the "are baked agents reachable" question is answered by making them so). |
-
----
-
-## Open questions and risks
-
-### W1: file permissions on `cp -r` from `/opt/claude/.claude/`
-
-The baked tree is owned by root (mode `0755` per the Dockerfile's `COPY --chown=root:root` convention). The container job runs as the GHA runner UID (non-root). `cp -r` from a root-owned source into a runner-writable `$HOME/.claude/` works as long as the source files are world-readable — which `0755`/`0644` directories and files are. Verify during W1 pre-merge testing that no `Permission denied` appears in the bridge step log. If permissions are tighter, a Dockerfile change to `chmod -R o+rX /opt/claude/.claude/` resolves it.
-
-### W2: allowlist blast-radius and "different eyes" integrity
-
-Expanding `--allowedTools` to include `Task` and `Skill` allows the LLM to dispatch sub-agents during a review run. The "different eyes" guarantee is now dual-layered: (1) filesystem isolation — write-side agents are not on disk, enforced by `expected.yaml` / `inventory-match.sh` at build time; (2) allowlist scoping — the Bash patterns in the review overlay's allowlist must not include write-side patterns (`git commit`, `git apply`, `git push`). Verify that `inventory-match.sh` runs in `runtime-build.yml` on both PR and push events before merging W2. A build-time regression that allows `code-writer` into the review image would not be caught by the allowlist alone.
-
-### W3: severity regex agreement between post-processor and authoritative gate
-
-The post-processor counts severity markers and synthesizes `findings.*` counts; the authoritative gate uses the same regex to produce its `BLOCKER_HITS` count. If the two regexes drift, the shadow gate's `agree:clean` / `agree:blocking` classification disagrees with the authoritative gate on the same review body — a silent quality-gate desync. Mitigation: extract the shared regex into `pr-review/lib/severity-regex.sh` (a sourced shell fragment), used by both the authoritative gate step and the post-processor step. Any future regex change touches one file and both consumers stay in sync.
-
-### Hardening follow-up (post-recovery)
-
-The root cause of #245 is that `runtime-build.yml`'s smoke tests verify the baked tree's structure but not whether the CLI actually discovers that content at runtime. A future smoke-test enhancement — a minimal `claude-code-action@v1`-shaped invocation (single-turn, no actual PR diff, `--print` mode) that emits the agent-registration log — would have caught the HOME-override problem at build time. This is out of scope for W1/W2/W3 but is the highest-value hardening action post-recovery.
+| github-actions PR #244 (`issue-242-option-a`) | ✓ closed 2026-05-08 | Reverted v2.4.2. No action needed. |
+| glitchwerks/siege-web PR #305 (v2.4.2 bump) | ✓ closed 2026-05-08 | Merged then closed. No action needed. |
+| glitchwerks/siege-web PR #309 (Option A verification) | ✓ closed 2026-05-08 | Result was negative for marker delivery; informed #245 findings. |
+| glitchwerks/siege-web issue #308 | ✓ closed | Tracked #309 verification run. |
+| glitchwerks/siege-web issue #304 | ✓ closed | Tracked v2.4.1 → v2.4.2 bump. |
+| github-actions issue #242 | open | Tracks `marker_missing`. Closes when W3 lands and shadow gate transitions off `error / marker_missing`. |
+| github-actions issue #245 | open | W1+W2 verification tracker. Remains open until bridge/allowlist work is verified and implemented in Phase 2. |
 
 ---
 
 ## Out of scope
 
-The following are explicitly excluded from this plan. They may be revisited as future work but are not required for the recovery.
-
-- **Forking `claude-code-action@v1`**: not needed. W1 bridges the baked content via a pre-step; W2 expands the allowlist; neither requires modifying the upstream action.
-- **Reclaiming CLI invocation entirely** (running `claude` directly rather than through `claude-code-action@v1`): technically possible and would give full control over `settingSources` and `--allowedTools`, but it is a much larger change and not required for the delivery fix.
-- **The `bot/` and `wiki/` paths in siege-web**: unrelated to the overlay recovery.
-- **Redesigning the overlay layer model**: the spec's §3.1 / §3.4 layer model is sound. This plan implements it correctly, not differently.
+- **W1 (bridge baked content into CLI discovery path):** deferred to Phase 2 pending verification that `$HOME/.claude/{agents,skills,plugins}` is the actual discovery path for those resource types. Issue #245 tracks the required verification work.
+- **W2 (expand `--allowedTools`):** deferred to Phase 2 pending demonstration that `Task`/`Skill` dispatch is supported in `claude-code-action@v1`'s non-interactive SDK invocation and that baked agents are reachable from that surface.
+- **Reclaiming CLI invocation entirely** (running `claude` directly rather than through `claude-code-action@v1`): technically possible, out of scope for recovery.
+- **Hardening `runtime-build.yml` smoke tests** to verify CLI discovery at build time: highest-value post-recovery hardening, deferred.
