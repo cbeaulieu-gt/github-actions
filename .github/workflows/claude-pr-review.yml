@@ -17,16 +17,21 @@ on:
       app_private_key:
         required: true
     inputs:
-      model:
-        description: 'Claude model to use'
+      authorized_users:
+        description: 'Comma-separated list of GitHub usernames that bypass the association check (useful when org membership is private). See #253.'
         type: string
         required: false
-        default: 'claude-sonnet-4-5'
+        default: ''
       max_turns:
         description: 'Maximum number of Claude turns'
         type: string
         required: false
         default: '30'
+      model:
+        description: 'Claude model to use'
+        type: string
+        required: false
+        default: 'claude-sonnet-4-5'
 
 # Required for the pull_request_target trigger in this repo.
 # External consumers using workflow_call must declare pull-requests: write in their own caller workflow.
@@ -60,5 +65,6 @@ jobs:
           claude_code_oauth_token: ${{ secrets.claude_code_oauth_token || secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           app_id: ${{ secrets.app_id || secrets.APP_ID }}
           app_private_key: ${{ secrets.app_private_key || secrets.APP_PRIVATE_KEY }}
+          authorized_users: ${{ inputs.authorized_users || '' }}
           model: ${{ inputs.model || 'claude-sonnet-4-5' }}
           max_turns: ${{ inputs.max_turns || '30' }}
