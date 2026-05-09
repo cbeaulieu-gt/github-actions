@@ -60,7 +60,7 @@ The `claude-*.yml` reusable workflows (everything except `ci-failure.yaml` and `
 
 **Workflows with `container: ghcr.io/...` must declare `packages: read`** in their `permissions:` block when the image is in an org-owned private GHCR package. GitHub Actions issues an implicit `docker login + docker pull` before the job container starts, authenticated with `GITHUB_TOKEN`; without `packages: read` the registry returns `manifest unknown` (an authorization-masked error that looks like the image is missing). All five Phase 5 (#188) container-pinned reusable workflows hit this trap because their `permissions:` blocks were carried over from the pre-container form — see #192 for the diagnosis and the hotfix that added `packages: read` to each. Add this scope alongside `contents:`, `pull-requests:`, etc. for any future workflow with a `container:` directive pointing at GHCR.
 
-**Token selection for `claude-code-action`:** Use `github_token: ${{ github.token }}` for read-only operations (PR review, which does not push commits). Use the resolved App token (`${{ steps.token.outputs.value }}`) when `claude-code-action` must push commits — tag responses, lint-diagnose, lint-failure, ci-failure, and apply-fix all pass the App token. GitHub suppresses `synchronize` events for pushes authenticated with `GITHUB_TOKEN`, so an App token is required to re-trigger downstream workflows like `pr-review`. App tokens are short-lived and show a distinct bot identity (e.g., `my-app[bot]`).
+**Token selection for `claude-code-action`:** All workflows now use the resolved App token (`${{ steps.token.outputs.value }}`) for `github_token` — including `pr-review`, which does not push commits but benefits from a consistent App bot identity. The prior carve-out that used `github.token` (surfacing as `github-actions[bot]`) for read-only PR review was reversed under issue #250 for identity consistency across all Claude-powered workflows. GitHub suppresses `synchronize` events for pushes authenticated with `GITHUB_TOKEN`, so an App token is required to re-trigger downstream workflows like `pr-review` on those paths as well. App tokens are short-lived and show a distinct bot identity (e.g., `my-app[bot]`).
 
 **Composite action inputs are always strings** — there is no `type` field. Boolean inputs like `require_association` arrive as the string `'true'`/`'false'` and must be compared with `[ "$VAR" = "true" ]`.
 
@@ -103,5 +103,5 @@ When changes are released: move both `v2` and the new `v2.x.x` tag to the latest
 | Secret | Used by |
 |---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | All `claude-code-action` invocations |
-| `APP_ID` | `ci-failure.yaml`, `apply-fix`, `lint-failure` — GitHub App ID for generating short-lived tokens for git push and API calls |
+| `APP_ID` | `ci-failure.yaml`, `apply-fix`, `lint-failure`, `pr-review` — GitHub App ID for generating short-lived tokens for git push and API calls |
 | `APP_PRIVATE_KEY` | Same as above — GitHub App private key (PEM format) |

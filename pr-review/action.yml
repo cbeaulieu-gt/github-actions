@@ -5,6 +5,12 @@ inputs:
   claude_code_oauth_token:
     description: 'Claude Code OAuth token'
     required: true
+  app_id:
+    description: 'GitHub App ID for generating a short-lived token (required for App-identity comments)'
+    required: false
+  app_private_key:
+    description: 'GitHub App private key for generating a short-lived token (required for App-identity comments)'
+    required: false
   model:
     description: 'Claude model to use'
     required: false
@@ -194,12 +200,35 @@ runs:
           echo "::warning::No baked persona at /opt/claude/.claude/CLAUDE.md — running without overlay persona"
         fi
 
+    - name: Generate App token
+      id: app-token
+      if: inputs.app_id != '' && inputs.app_private_key != ''
+      uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3  # v3.1.1
+      with:
+        client-id: ${{ inputs.app_id }}
+        private-key: ${{ inputs.app_private_key }}
+
+    - name: Resolve review token
+      id: token
+      shell: bash
+      # shellcheck disable=SC2016
+      env:
+        APP_TOKEN: ${{ steps.app-token.outputs.token }}
+      run: |
+        if [ -n "$APP_TOKEN" ]; then
+          echo "::debug::Using GitHub App token for review identity"
+          echo "value=$APP_TOKEN" >> "$GITHUB_OUTPUT"
+        else
+          echo "::error::No authentication token provided. Set app_id + app_private_key inputs. See README for GitHub App setup instructions."
+          exit 1
+        fi
+
     - uses: anthropics/claude-code-action@v1
       id: claude-review
       if: steps.authz.outputs.skip != 'true' && steps.size-check.outputs.skip != 'true'
       with:
         claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
-        github_token: ${{ github.token }}
+        github_token: ${{ steps.token.outputs.value }}
         use_sticky_comment: true
         track_progress: true
         claude_args: --max-turns ${{ env.EFFECTIVE_MAX_TURNS }} --model ${{ inputs.model }} --allowedTools "Bash(gh pr diff:*),Bash(gh pr review:*),Bash(gh pr view:*)"
@@ -267,7 +296,7 @@ runs:
         # default ordering. Pagination: 100 comments is enough for any
         # realistic PR; if a PR ever exceeds, the gate misses newer pages.
         BODY=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
-          --jq 'map(select(.user.login == "github-actions[bot]")) | sort_by(.updated_at) | last | .body // ""' \
+          --jq 'map(select(.user.login | endswith("[bot]"))) | sort_by(.updated_at) | last | .body // ""' \
           2>/dev/null || echo "")
 
         # If no bot comment exists, the review has not completed — skip the status
@@ -338,7 +367,7 @@ runs:
         # In practice each new run produces a separate sticky comment (multiple bot
         # comments accumulate on a PR with multiple pushes — see action.yml line 254).
         COMMENT_JSON=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
-          --jq "map(select(.user.login == \"github-actions[bot]\") | select(.updated_at >= \"$REVIEW_START_TIME\")) | sort_by(.updated_at) | last // empty" \
+          --jq "map(select((.user.login | endswith(\"[bot]\")) and .updated_at >= \"$REVIEW_START_TIME\")) | sort_by(.updated_at) | last // empty" \
           2>/dev/null || echo "")
 
         if [ -z "$COMMENT_JSON" ]; then
@@ -448,7 +477,7 @@ runs:
           # edited bot comment; the API returns created_at ASC by default and does not
           # honour sort/direction params.
           BODY=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
-            --jq 'map(select(.user.login == "github-actions[bot]")) | sort_by(.updated_at) | last | .body // ""' \
+            --jq 'map(select(.user.login | endswith("[bot]"))) | sort_by(.updated_at) | last | .body // ""' \
             2>/dev/null || echo "")
         fi
 
@@ -557,7 +586,7 @@ runs:
         # from human comments or comments posted by a prior run on the same PR.
         COMMENT_COUNT=$(gh pr view "$PR_NUMBER" --json comments \
           | jq --arg since "$REVIEW_START_TIME" \
-          '[.comments[] | select(.author.login == "github-actions[bot]") | select(.createdAt > $since)] | length' \
+          '[.comments[] | select(.author.login | endswith("[bot]")) | select(.createdAt > $since)] | length' \
           2>/dev/null || echo "0")
 
         if [ "$COMMENT_COUNT" -gt "0" ]; then
