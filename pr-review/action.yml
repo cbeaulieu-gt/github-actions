@@ -184,9 +184,13 @@ runs:
         REPO="$GH_REPO"
 
         # Step 1 — explicit authorized_users allowlist (case-insensitive CSV match).
+        # Whitespace is stripped before matching so "alice, bob, charlie" works
+        # the same as "alice,bob,charlie" — copy-paste from human-written lists
+        # is the common case and an unstripped " bob " would silently fail to
+        # match "bob".
         if [ -n "$AUTHORIZED_USERS" ]; then
-          ACTOR_LOWER=$(echo "$ACTOR" | tr '[:upper:]' '[:lower:]')
-          USERS_LOWER=$(echo "$AUTHORIZED_USERS" | tr '[:upper:]' '[:lower:]')
+          ACTOR_LOWER=$(echo "$ACTOR" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+          USERS_LOWER=$(echo "$AUTHORIZED_USERS" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
           if echo ",$USERS_LOWER," | grep -q ",$ACTOR_LOWER,"; then
             echo "Authorized via authorized_users allowlist: $ACTOR"
             exit 0
