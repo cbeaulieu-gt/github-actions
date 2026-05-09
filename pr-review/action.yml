@@ -379,13 +379,15 @@ runs:
         # - Plain "MAJOR" / "BLOCKING" require markdown bold to avoid matching code
         #   snippets, prose, or unrelated tokens (SUBMAJOR, MAJOR_VERSION, UNBLOCKING).
         # Regex sourced from lib/severity-regex.sh (shared with synthesis and shadow gate).
-        # Pre-filter: drop lines containing the resolution checkmark (✅) before the
-        # severity grep. On incremental (multi-pass) reviews the persona narrates
-        # resolved findings as `#### ✅ 🔴 Critical (BLOCKING) - FIXED` — the severity
-        # token is identical to a fresh finding, but the checkmark distinguishes
-        # resolved-narration from open findings. Without this pre-filter, the gate
-        # blocks PRs whose findings are all fixed (issue #248).
-        BLOCKER_HITS=$(printf '%s' "$BODY" | grep -v '✅' | grep -E -c "$SEVERITY_BLOCKER_RE" || true)
+        # Pre-filter: drop resolution-narration lines before the severity grep.
+        # On incremental (multi-pass) reviews the persona may narrate resolved
+        # findings in two styles: (a) `#### ✅ 🔴 Critical (BLOCKING) - FIXED`
+        # (checkmark on same line — covered by ✅ filter, issue #248); or
+        # (b) a `### ✅` section header followed by per-finding lines ending in
+        # `— **FIXED**`/`**ADDRESSED**`/`**RESOLVED**` (bold markdown suffix —
+        # covered by the extended regex, issue #257).
+        # Without this pre-filter, the gate blocks PRs whose findings are all fixed.
+        BLOCKER_HITS=$(printf '%s' "$BODY" | grep -vE '✅|\*\*(FIXED|ADDRESSED|RESOLVED)\*\*' | grep -E -c "$SEVERITY_BLOCKER_RE" || true)
 
         echo "Quality gate scan: $BLOCKER_HITS marker(s) matched in latest sticky comment"
 
@@ -458,12 +460,15 @@ runs:
         # Count per-bucket using grep -oE | wc -l (counts matches, not lines).
         # grep -cE would count lines; a single line containing two severity tokens
         # would count as 1 — grep -oE | wc -l counts each token individually.
-        # Pre-filter `grep -v '✅'` drops resolution-narration lines (e.g.
-        # `#### ✅ 🔴 Critical (BLOCKING) - FIXED`) so resolved findings on
+        # Pre-filter drops resolution-narration lines so resolved findings on
         # incremental reviews don't inflate the synthesized counts (issue #248).
+        # Expanded in #257: also drop lines ending in **FIXED**, **ADDRESSED**,
+        # or **RESOLVED** (bold markdown) — the persona's terminal suffix on
+        # two-level narration structures where the ✅ appears on a section header
+        # rather than on the same line as the severity token.
         # Same pre-filter applies in the authoritative and shadow gate steps;
         # all three callsites must stay in sync.
-        OPEN_BODY=$(printf '%s' "$BODY" | grep -v '✅' || true)
+        OPEN_BODY=$(printf '%s' "$BODY" | grep -vE '✅|\*\*(FIXED|ADDRESSED|RESOLVED)\*\*' || true)
         CRITICAL=$(printf '%s' "$OPEN_BODY" | grep -oE "$SEVERITY_CRITICAL_RE" | wc -l || true)
         HIGH=$(printf '%s' "$OPEN_BODY"     | grep -oE "$SEVERITY_HIGH_RE"     | wc -l || true)
         MEDIUM=$(printf '%s' "$OPEN_BODY"   | grep -oE "$SEVERITY_MEDIUM_RE"   | wc -l || true)
@@ -558,10 +563,12 @@ runs:
 
         # --- Prose-regex result (sourced from lib/severity-regex.sh) ----------------
         # Regex sourced above; $SEVERITY_BLOCKER_RE is the combined blocker class.
-        # `grep -v '✅'` drops resolution-narration lines so resolved findings
-        # on incremental reviews don't inflate the prose hit count. Must stay
-        # in sync with the authoritative gate step's identical pre-filter (#248).
-        BLOCKER_HITS=$(printf '%s' "$BODY" | grep -v '✅' | grep -E -c "$SEVERITY_BLOCKER_RE" || true)
+        # Pre-filter drops resolution-narration lines so resolved findings
+        # on incremental reviews don't inflate the prose hit count. Expanded
+        # in #257 to also cover **FIXED**/**ADDRESSED**/**RESOLVED** suffixes
+        # (bold markdown). Must stay in sync with the authoritative gate step
+        # and the synthesis pre-filter (#248, #257).
+        BLOCKER_HITS=$(printf '%s' "$BODY" | grep -vE '✅|\*\*(FIXED|ADDRESSED|RESOLVED)\*\*' | grep -E -c "$SEVERITY_BLOCKER_RE" || true)
         if [ "$BLOCKER_HITS" -gt "0" ]; then
           PROSE_RESULT="blocking"
         else
