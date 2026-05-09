@@ -2,15 +2,19 @@ name: 'Claude PR Review'
 description: 'Uses Claude to review a pull request for code quality, security, performance, and test coverage'
 
 inputs:
-  claude_code_oauth_token:
-    description: 'Claude Code OAuth token'
-    required: true
   app_id:
     description: 'GitHub App ID for generating a short-lived token (required for App-identity comments)'
     required: false
   app_private_key:
     description: 'GitHub App private key for generating a short-lived token (required for App-identity comments)'
     required: false
+  authorized_users:
+    description: 'Comma-separated list of GitHub usernames that bypass the association check. When set, any actor in this list is authorized regardless of org membership visibility. Takes precedence over the API-fallback collaborator check. See #253.'
+    required: false
+    default: ''
+  claude_code_oauth_token:
+    description: 'Claude Code OAuth token'
+    required: true
   model:
     description: 'Claude model to use'
     required: false
@@ -143,6 +147,28 @@ runs:
         echo "PR_FILES=$FILES" >> "$GITHUB_ENV"
 
     - name: Check author association
+      # Three-step authorization (fix for #253 — private org membership is not
+      # disclosed in pull_request* event payloads, so org admins may appear as
+      # CONTRIBUTOR even though they are repo collaborators):
+      #
+      # 1. authorized_users CSV input (explicit override, highest precedence).
+      #    If $ACTOR is in the list, authorize immediately — no API call needed.
+      #
+      # 2. author_association field from the event payload.
+      #    OWNER / MEMBER / COLLABORATOR → authorize.
+      #    This fast-path is still valid for public org membership and direct
+      #    collaborators whose association GitHub does disclose.
+      #
+      # 3. API-fallback collaborator check (zero-config fix for #253).
+      #    gh api repos/$REPO/collaborators/$ACTOR exits 0 (HTTP 204) when the
+      #    actor is a repo collaborator; non-zero (HTTP 404/403) when not.
+      #    Failure mode: any non-zero exit (rate-limit, 403, network error) is
+      #    treated as "not a collaborator" and the PR is blocked — we do NOT
+      #    silently authorize on API error.
+      #
+      # This step emits skip=true only when all three checks fail, which
+      # preserves the existing downstream guard used by: Check PR size,
+      # claude-code-action, quality-gate, and shadow-gate steps.
       id: authz
       shell: bash
       env:
@@ -150,15 +176,49 @@ runs:
         AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
         PR_ACTOR: ${{ github.event.pull_request.user.login }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
+        GH_REPO: ${{ github.repository }}
+        AUTHORIZED_USERS: ${{ inputs.authorized_users }}
       run: |
         ASSOCIATION="$AUTHOR_ASSOCIATION"
         ACTOR="$PR_ACTOR"
-        if [ "$ASSOCIATION" = "OWNER" ] || [ "$ASSOCIATION" = "MEMBER" ] || [ "$ASSOCIATION" = "COLLABORATOR" ]; then
-          echo "Authorized: $ACTOR ($ASSOCIATION)"
-        else
-          gh pr comment "$PR_NUMBER" --body "Automated review is restricted to repository members. A maintainer can trigger a review by commenting \`@claude review this PR\`."
-          echo "skip=true" >> "$GITHUB_OUTPUT"
+        REPO="$GH_REPO"
+
+        # Step 1 — explicit authorized_users allowlist (case-insensitive CSV match).
+        # Whitespace is stripped before matching so "alice, bob, charlie" works
+        # the same as "alice,bob,charlie" — copy-paste from human-written lists
+        # is the common case and an unstripped " bob " would silently fail to
+        # match "bob".
+        if [ -n "$AUTHORIZED_USERS" ]; then
+          ACTOR_LOWER=$(echo "$ACTOR" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+          USERS_LOWER=$(echo "$AUTHORIZED_USERS" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+          if echo ",$USERS_LOWER," | grep -q ",$ACTOR_LOWER,"; then
+            echo "Authorized via authorized_users allowlist: $ACTOR"
+            exit 0
+          fi
         fi
+
+        # Step 2 — author_association field from event payload.
+        if [ "$ASSOCIATION" = "OWNER" ] || [ "$ASSOCIATION" = "MEMBER" ] || [ "$ASSOCIATION" = "COLLABORATOR" ]; then
+          echo "Authorized via author_association: $ACTOR ($ASSOCIATION)"
+          exit 0
+        fi
+
+        # Step 3 — API-fallback collaborator check (#253).
+        # Handles private org membership: GitHub omits private-org MEMBER status
+        # from pull_request* payloads, so admins may appear as CONTRIBUTOR.
+        # gh api exits 0 on HTTP 204 (is a collaborator) or non-zero on 404/403.
+        # Any non-zero exit — including rate-limit (429) or server errors — is
+        # intentionally treated as "not a collaborator" to avoid silent authorization.
+        echo "author_association is '$ASSOCIATION' — attempting API collaborator check for $ACTOR"
+        if gh api -X GET "repos/$REPO/collaborators/$ACTOR" --silent 2>/dev/null; then
+          echo "Authorized via API collaborator check: $ACTOR is a repo collaborator"
+          exit 0
+        fi
+
+        # All three checks failed — block the review.
+        echo "Not authorized: $ACTOR (association=$ASSOCIATION, not in authorized_users, not a repo collaborator)"
+        gh pr comment "$PR_NUMBER" --body "Automated review is restricted to repository members. A maintainer can trigger a review by commenting \`@claude review this PR\`."
+        echo "skip=true" >> "$GITHUB_OUTPUT"
 
     - name: Check PR size
       id: size-check
