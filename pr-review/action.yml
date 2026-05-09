@@ -283,7 +283,7 @@ runs:
         # shellcheck disable=SC1090
         source "$SEVERITY_REGEX_SH"
 
-        # Fetch the most recent comment authored by github-actions[bot]. Claude's
+        # Fetch the most recent comment authored by any [bot] account. Claude's
         # review uses use_sticky_comment: true, but in practice each new run
         # produces a separate sticky comment (multiple bot comments accumulate
         # on a PR with multiple pushes). We grep the genuinely-latest one.
@@ -304,7 +304,7 @@ runs:
         # Branch protection will see no status and treat it as a missing required
         # check, which correctly blocks merge until the review actually runs.
         if [ -z "$BODY" ]; then
-          echo "Quality gate: no github-actions[bot] sticky comment found — skipping status post"
+          echo "Quality gate: no [bot] sticky comment found — skipping status post"
           exit 0
         fi
 
@@ -483,7 +483,7 @@ runs:
 
         # Skip entirely when there is no bot comment (review did not complete).
         if [ -z "$BODY" ]; then
-          echo "Shadow gate: no github-actions[bot] sticky comment found — skipping"
+          echo "Shadow gate: no [bot] sticky comment found — skipping"
           exit 0
         fi
 
@@ -582,7 +582,7 @@ runs:
         # Skip the warning if Claude already posted a review comment during this run.
         # Claude posts its summary as a regular PR comment (via use_sticky_comment), not a
         # formal review submission, so we check comments rather than reviews.
-        # Filter by author (github-actions[bot]) and timestamp to avoid false positives
+        # Filter by author (any [bot]) and timestamp to avoid false positives
         # from human comments or comments posted by a prior run on the same PR.
         COMMENT_COUNT=$(gh pr view "$PR_NUMBER" --json comments \
           | jq --arg since "$REVIEW_START_TIME" \
