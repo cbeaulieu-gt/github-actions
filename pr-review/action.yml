@@ -5,6 +5,12 @@ inputs:
   claude_code_oauth_token:
     description: 'Claude Code OAuth token'
     required: true
+  app_id:
+    description: 'GitHub App ID for generating a short-lived token (required for App-identity comments)'
+    required: false
+  app_private_key:
+    description: 'GitHub App private key for generating a short-lived token (required for App-identity comments)'
+    required: false
   model:
     description: 'Claude model to use'
     required: false
@@ -194,12 +200,35 @@ runs:
           echo "::warning::No baked persona at /opt/claude/.claude/CLAUDE.md — running without overlay persona"
         fi
 
+    - name: Generate App token
+      id: app-token
+      if: inputs.app_id != '' && inputs.app_private_key != ''
+      uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3  # v3.1.1
+      with:
+        client-id: ${{ inputs.app_id }}
+        private-key: ${{ inputs.app_private_key }}
+
+    - name: Resolve review token
+      id: token
+      shell: bash
+      # shellcheck disable=SC2016
+      env:
+        APP_TOKEN: ${{ steps.app-token.outputs.token }}
+      run: |
+        if [ -n "$APP_TOKEN" ]; then
+          echo "::debug::Using GitHub App token for review identity"
+          echo "value=$APP_TOKEN" >> "$GITHUB_OUTPUT"
+        else
+          echo "::error::No authentication token provided. Set app_id + app_private_key inputs. See README for GitHub App setup instructions."
+          exit 1
+        fi
+
     - uses: anthropics/claude-code-action@v1
       id: claude-review
       if: steps.authz.outputs.skip != 'true' && steps.size-check.outputs.skip != 'true'
       with:
         claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
-        github_token: ${{ github.token }}
+        github_token: ${{ steps.token.outputs.value }}
         use_sticky_comment: true
         track_progress: true
         claude_args: --max-turns ${{ env.EFFECTIVE_MAX_TURNS }} --model ${{ inputs.model }} --allowedTools "Bash(gh pr diff:*),Bash(gh pr review:*),Bash(gh pr view:*)"
@@ -246,6 +275,7 @@ runs:
         # status checks per the HEAD commit of the PR's head branch.
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         SEVERITY_REGEX_SH: ${{ github.action_path }}/lib/severity-regex.sh
+        REVIEW_START_TIME: ${{ env.REVIEW_START_TIME }}
       run: |
         set -euo pipefail
         REPO="$GH_REPOSITORY"
@@ -254,20 +284,25 @@ runs:
         # shellcheck disable=SC1090
         source "$SEVERITY_REGEX_SH"
 
-        # Fetch the most recent comment authored by github-actions[bot]. Claude's
-        # review uses use_sticky_comment: true, but in practice each new run
-        # produces a separate sticky comment (multiple bot comments accumulate
-        # on a PR with multiple pushes). We grep the genuinely-latest one.
+        # Fetch the most recent comment authored by any [bot] account *that was
+        # updated during this review run*. The endswith("[bot]") matcher picks
+        # up Claude's App-identity comment regardless of bot login (#250 made
+        # the matcher login-agnostic), but it would also pick up stale comments
+        # from other bots (Dependabot, Renovate, CodeQL, etc.) — so we MUST
+        # gate by REVIEW_START_TIME, otherwise a foreign bot updating its own
+        # comment after Claude finishes would silently win the sort and the
+        # gate would read the wrong body. Mirrors the synthesis step at
+        # ~line 370 and the incomplete-review check at ~line 589.
         #
         # IMPORTANT (#184 fix): the GitHub REST API's /issues/{n}/comments
         # endpoint does NOT support sort/direction query params — those are
         # silently ignored and results come back in created_at ASC order.
         # We must sort manually in jq. Using sort_by(.updated_at) | last
-        # picks the most-recently-edited bot comment regardless of API
-        # default ordering. Pagination: 100 comments is enough for any
+        # picks the most-recently-edited matching bot comment regardless of
+        # API default ordering. Pagination: 100 comments is enough for any
         # realistic PR; if a PR ever exceeds, the gate misses newer pages.
         BODY=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
-          --jq 'map(select(.user.login == "github-actions[bot]")) | sort_by(.updated_at) | last | .body // ""' \
+          --jq "map(select((.user.login | endswith(\"[bot]\")) and .updated_at >= \"$REVIEW_START_TIME\")) | sort_by(.updated_at) | last | .body // \"\"" \
           2>/dev/null || echo "")
 
         # If no bot comment exists, the review has not completed — skip the status
@@ -275,7 +310,7 @@ runs:
         # Branch protection will see no status and treat it as a missing required
         # check, which correctly blocks merge until the review actually runs.
         if [ -z "$BODY" ]; then
-          echo "Quality gate: no github-actions[bot] sticky comment found — skipping status post"
+          echo "Quality gate: no [bot] sticky comment found — skipping status post"
           exit 0
         fi
 
@@ -338,7 +373,7 @@ runs:
         # In practice each new run produces a separate sticky comment (multiple bot
         # comments accumulate on a PR with multiple pushes — see action.yml line 254).
         COMMENT_JSON=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
-          --jq "map(select(.user.login == \"github-actions[bot]\") | select(.updated_at >= \"$REVIEW_START_TIME\")) | sort_by(.updated_at) | last // empty" \
+          --jq "map(select((.user.login | endswith(\"[bot]\")) and .updated_at >= \"$REVIEW_START_TIME\")) | sort_by(.updated_at) | last // empty" \
           2>/dev/null || echo "")
 
         if [ -z "$COMMENT_JSON" ]; then
@@ -428,6 +463,7 @@ runs:
         # potentially hitting API replication lag on the just-patched body.
         # shellcheck disable=SC2016
         SYNTHESIS_COMMENT_ID: ${{ env.SYNTHESIS_COMMENT_ID }}
+        REVIEW_START_TIME: ${{ env.REVIEW_START_TIME }}
       run: |
         set -euo pipefail
         REPO="$GH_REPOSITORY"
@@ -438,7 +474,9 @@ runs:
         # --- Fetch the review comment body. ------------------------------------------
         # If the synthesis step pinned a comment ID to $GITHUB_ENV, use it directly
         # (avoids replication-lag race on the just-PATCHed body). Otherwise fall back
-        # to the sort_by(updated_at)|last selector.
+        # to the sort_by(updated_at)|last selector, gated by REVIEW_START_TIME so a
+        # foreign bot's stale comment can't win the sort under endswith("[bot]")
+        # (#250) — mirrors the authoritative gate's selector.
         if [ -n "${SYNTHESIS_COMMENT_ID:-}" ]; then
           BODY=$(gh api "repos/$REPO/issues/comments/$SYNTHESIS_COMMENT_ID" \
             --jq '.body // ""' 2>/dev/null || echo "")
@@ -448,13 +486,13 @@ runs:
           # edited bot comment; the API returns created_at ASC by default and does not
           # honour sort/direction params.
           BODY=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
-            --jq 'map(select(.user.login == "github-actions[bot]")) | sort_by(.updated_at) | last | .body // ""' \
+            --jq "map(select((.user.login | endswith(\"[bot]\")) and .updated_at >= \"$REVIEW_START_TIME\")) | sort_by(.updated_at) | last | .body // \"\"" \
             2>/dev/null || echo "")
         fi
 
         # Skip entirely when there is no bot comment (review did not complete).
         if [ -z "$BODY" ]; then
-          echo "Shadow gate: no github-actions[bot] sticky comment found — skipping"
+          echo "Shadow gate: no [bot] sticky comment found — skipping"
           exit 0
         fi
 
@@ -553,11 +591,11 @@ runs:
         # Skip the warning if Claude already posted a review comment during this run.
         # Claude posts its summary as a regular PR comment (via use_sticky_comment), not a
         # formal review submission, so we check comments rather than reviews.
-        # Filter by author (github-actions[bot]) and timestamp to avoid false positives
+        # Filter by author (any [bot]) and timestamp to avoid false positives
         # from human comments or comments posted by a prior run on the same PR.
         COMMENT_COUNT=$(gh pr view "$PR_NUMBER" --json comments \
           | jq --arg since "$REVIEW_START_TIME" \
-          '[.comments[] | select(.author.login == "github-actions[bot]") | select(.createdAt > $since)] | length' \
+          '[.comments[] | select(.author.login | endswith("[bot]")) | select(.createdAt > $since)] | length' \
           2>/dev/null || echo "0")
 
         if [ "$COMMENT_COUNT" -gt "0" ]; then

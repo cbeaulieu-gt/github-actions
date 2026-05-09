@@ -12,6 +12,10 @@ on:
     secrets:
       claude_code_oauth_token:
         required: true
+      app_id:
+        required: true
+      app_private_key:
+        required: true
     inputs:
       model:
         description: 'Claude model to use'
@@ -54,5 +58,7 @@ jobs:
       - uses: glitchwerks/github-actions/pr-review@v2
         with:
           claude_code_oauth_token: ${{ secrets.claude_code_oauth_token || secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          app_id: ${{ secrets.app_id || secrets.APP_ID }}
+          app_private_key: ${{ secrets.app_private_key || secrets.APP_PRIVATE_KEY }}
           model: ${{ inputs.model || 'claude-sonnet-4-5' }}
           max_turns: ${{ inputs.max_turns || '30' }}
