@@ -30,7 +30,7 @@ runs:
   steps:
     - name: Check authorization
       id: authz
-      uses: ./check-auth
+      uses: glitchwerks/github-actions/check-auth@v2
       with:
         authorized_users: ${{ inputs.authorized_users }}
 
