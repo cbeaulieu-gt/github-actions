@@ -243,21 +243,25 @@ runs:
       shell: bash
       run: echo "REVIEW_START_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
 
-    - name: Install persona for claude-code-action CLI
+    - name: Install overlay tree for claude-code-action CLI
       shell: bash
       run: |
         # GitHub Actions overrides HOME=/github/home in container jobs, discarding
-        # the image's baked HOME=/opt/claude. The fresh CLI installed by
-        # claude-code-action@v1 reads its user-level CLAUDE.md from
-        # $HOME/.claude/CLAUDE.md — a path that does not exist by default.
-        # Copy the baked persona to where the runtime CLI looks.
-        # Tracking: https://github.com/glitchwerks/github-actions/issues/242
-        if [ -f /opt/claude/.claude/CLAUDE.md ]; then
+        # the image's baked HOME=/opt/claude. The CLI discovers $HOME/.claude/ which
+        # resolves to /github/home/.claude/ (empty) — agents/skills/plugins/hooks are
+        # all orphaned. Fix: copy the full baked overlay tree into $HOME/.claude/ so
+        # the CLI's user-level discovery finds the complete agent/skill/plugin set.
+        # CLAUDE.md copy is covered by this cp (superset of the old cp step).
+        # Tracking: https://github.com/glitchwerks/github-actions/issues/259
+        if [ -d /opt/claude/.claude ]; then
           mkdir -p "$HOME/.claude"
-          cp /opt/claude/.claude/CLAUDE.md "$HOME/.claude/CLAUDE.md"
-          echo "Persona installed: $(wc -l < "$HOME/.claude/CLAUDE.md") lines from /opt/claude/.claude/CLAUDE.md"
+          cp -r /opt/claude/.claude/. "$HOME/.claude/"
+          agent_count=$(find "$HOME/.claude/agents" -name '*.md' 2>/dev/null | wc -l || echo 0)
+          skill_count=$(find "$HOME/.claude/skills" -type f 2>/dev/null | wc -l || echo 0)
+          plugin_count=$(find "$HOME/.claude/plugins" -type d -mindepth 1 -maxdepth 1 2>/dev/null | wc -l || echo 0)
+          echo "Overlay installed: agents=${agent_count} skills=${skill_count} plugins=${plugin_count}"
         else
-          echo "::warning::No baked persona at /opt/claude/.claude/CLAUDE.md — running without overlay persona"
+          echo "::warning::No baked overlay at /opt/claude/.claude — running without overlay tree"
         fi
 
     - name: Generate App token
@@ -291,7 +295,7 @@ runs:
         github_token: ${{ steps.token.outputs.value }}
         use_sticky_comment: true
         track_progress: true
-        claude_args: --max-turns ${{ env.EFFECTIVE_MAX_TURNS }} --model ${{ inputs.model }} --allowedTools "Bash(gh pr diff:*),Bash(gh pr review:*),Bash(gh pr view:*)"
+        claude_args: --max-turns ${{ env.EFFECTIVE_MAX_TURNS }} --model ${{ inputs.model }} --allowedTools "Bash(gh pr diff:*),Bash(gh pr review:*),Bash(gh pr view:*),Task,Skill"
         prompt: |
           Review the pull request in repository ${{ github.repository }} (#${{ github.event.pull_request.number }}).
 
