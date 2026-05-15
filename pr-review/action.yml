@@ -394,11 +394,13 @@ runs:
         # and does not false-positive-suppress findings that mention FIXED mid-line.
         # Without this pre-filter, the gate blocks PRs whose findings are all fixed.
         # Third branch (issue #269, reproducer glitchwerks/claude-configs#564): drop
-        # lines whose severity token is followed by `: <digits>` at end of line.
-        # These are findings-tally summary lines (e.g. `- 🔴 Critical (BLOCKING): 0`)
-        # emitted by the persona as a count report, not as individual findings.
-        # A non-zero summary is also not itself a finding; per-item callouts are.
-        BLOCKER_HITS=$(printf '%s' "$BODY" | grep -vE '✅|\*\*(FIXED|ADDRESSED|RESOLVED)\*\*\s*$|:\s*[0-9]+\s*$' | grep -E -c "$SEVERITY_BLOCKER_RE" || true)
+        # persona-emitted summary-tally lines of the form `- 🔴 Critical (BLOCKING): 0`.
+        # The parenthesized severity-class marker `(BLOCKING|MAJOR|MEDIUM|LOW)` is the
+        # structural signature — legitimate per-finding callouts like `- 🟢 Medium: 1`
+        # don't carry the parenthesized class. Pattern is intentionally count-agnostic:
+        # a summary line is never itself a finding regardless of whether its count is
+        # zero or non-zero. Issue: #269.
+        BLOCKER_HITS=$(printf '%s' "$BODY" | grep -vE '✅|\*\*(FIXED|ADDRESSED|RESOLVED)\*\*\s*$|\((BLOCKING|MAJOR|MEDIUM|LOW)\):\s*[0-9]+\s*$' | grep -E -c "$SEVERITY_BLOCKER_RE" || true)
 
         echo "Quality gate scan: $BLOCKER_HITS marker(s) matched in latest sticky comment"
 
@@ -480,13 +482,15 @@ runs:
         # end-of-line (\s*$) to avoid false-positive suppression of findings that
         # mention FIXED/ADDRESSED/RESOLVED bold mid-line (#258 review feedback).
         # Third branch (issue #269, reproducer glitchwerks/claude-configs#564): drop
-        # lines whose severity token is followed by `: <digits>` at end of line.
-        # These are findings-tally summary lines (e.g. `- 🔴 Critical (BLOCKING): 0`)
-        # emitted by the persona as a count report, not as individual findings.
-        # A non-zero summary is also not itself a finding; per-item callouts are.
+        # persona-emitted summary-tally lines of the form `- 🔴 Critical (BLOCKING): 0`.
+        # The parenthesized severity-class marker `(BLOCKING|MAJOR|MEDIUM|LOW)` is the
+        # structural signature — legitimate per-finding callouts like `- 🟢 Medium: 1`
+        # don't carry the parenthesized class. Pattern is intentionally count-agnostic:
+        # a summary line is never itself a finding regardless of whether its count is
+        # zero or non-zero. Issue: #269.
         # Same pre-filter applies in the authoritative and shadow gate steps;
         # all three callsites must stay in sync.
-        OPEN_BODY=$(printf '%s' "$BODY" | grep -vE '✅|\*\*(FIXED|ADDRESSED|RESOLVED)\*\*\s*$|:\s*[0-9]+\s*$' || true)
+        OPEN_BODY=$(printf '%s' "$BODY" | grep -vE '✅|\*\*(FIXED|ADDRESSED|RESOLVED)\*\*\s*$|\((BLOCKING|MAJOR|MEDIUM|LOW)\):\s*[0-9]+\s*$' || true)
         CRITICAL=$(printf '%s' "$OPEN_BODY" | grep -oE "$SEVERITY_CRITICAL_RE" | wc -l || true)
         HIGH=$(printf '%s' "$OPEN_BODY"     | grep -oE "$SEVERITY_HIGH_RE"     | wc -l || true)
         MEDIUM=$(printf '%s' "$OPEN_BODY"   | grep -oE "$SEVERITY_MEDIUM_RE"   | wc -l || true)
@@ -586,11 +590,14 @@ runs:
         # in #257 to also cover **FIXED**/**ADDRESSED**/**RESOLVED** suffixes
         # (bold markdown). Anchored to end-of-line (\s*$) so only the persona's
         # terminal suffix is suppressed, not mid-line occurrences (#258). Third
-        # branch (issue #269): also drop findings-tally summary lines ending in
-        # `: <digits>` (e.g. `- 🔴 Critical (BLOCKING): 0`). Must stay in sync
-        # with the authoritative gate step and the synthesis pre-filter
-        # (#248, #257, #258, #269).
-        BLOCKER_HITS=$(printf '%s' "$BODY" | grep -vE '✅|\*\*(FIXED|ADDRESSED|RESOLVED)\*\*\s*$|:\s*[0-9]+\s*$' | grep -E -c "$SEVERITY_BLOCKER_RE" || true)
+        # branch (issue #269): drop persona-emitted summary-tally lines of the form
+        # `- 🔴 Critical (BLOCKING): 0` — the parenthesized severity-class marker
+        # `(BLOCKING|MAJOR|MEDIUM|LOW)` is the structural signature. Legitimate
+        # per-finding callouts like `- 🟢 Medium: 1` don't carry the parenthesized
+        # class. Reproducer: glitchwerks/claude-configs#564. Issue: #269.
+        # Must stay in sync with the authoritative gate step and the synthesis
+        # pre-filter (#248, #257, #258, #269).
+        BLOCKER_HITS=$(printf '%s' "$BODY" | grep -vE '✅|\*\*(FIXED|ADDRESSED|RESOLVED)\*\*\s*$|\((BLOCKING|MAJOR|MEDIUM|LOW)\):\s*[0-9]+\s*$' | grep -E -c "$SEVERITY_BLOCKER_RE" || true)
         if [ "$BLOCKER_HITS" -gt "0" ]; then
           PROSE_RESULT="blocking"
         else
