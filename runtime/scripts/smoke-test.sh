@@ -63,11 +63,13 @@ FILES_OUT=$(mktemp)
 SMOKE_OUT=$(mktemp)
 SMOKE_STDERR=$(mktemp)
 PERMS_STDERR=$(mktemp)
+REACH_OUT=$(mktemp)
+REACH_STDERR=$(mktemp)
 # Cumulative cleanup function — variables are interpolated at exit time, so
-# adding more temp files later (SMOKE_STDERR, PERMS_STDERR) is automatically
-# included as long as those vars are non-empty when the trap fires.
+# adding more temp files later is automatically included as long as those
+# vars are non-empty when the trap fires.
 cleanup() {
-  rm -f "$SMOKE_OUT" "${SMOKE_STDERR:-}" "${PERMS_STDERR:-}" "$FILES_OUT" 2>/dev/null
+  rm -f "$SMOKE_OUT" "${SMOKE_STDERR:-}" "${PERMS_STDERR:-}" "$FILES_OUT" "${REACH_OUT:-}" "${REACH_STDERR:-}" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -120,6 +122,30 @@ if [ "${#missing[@]}" -gt 0 ]; then
 fi
 
 echo "smoke-test: persona structural check OK (agents=$agent_count, skills=$skill_count, plugins=$plugin_count, all required files present)"
+
+# ---- (a.3) Reachability probe: overlay tree reachable via $HOME discovery ----
+# Validates that the cp -r step in pr-review/action.yml (issue #259) makes
+# baked agents discoverable when GHA overrides HOME to a fresh directory.
+echo "smoke-test: reachability probe..."
+if ! docker run --rm --user "$SMOKE_UID" \
+    -e HOME=/tmp/fake-home \
+    --entrypoint /bin/sh "$IMAGE" \
+    -c 'mkdir -p /tmp/fake-home/.claude && cp -r /opt/claude/.claude/. /tmp/fake-home/.claude/ && find /tmp/fake-home/.claude/agents -name "*.md" | wc -l' \
+    > "$REACH_OUT" 2>"$REACH_STDERR"; then
+  echo "ERROR reachability_probe_failed image=$IMAGE" >&2
+  cat "$REACH_STDERR" >&2
+  exit 1
+fi
+
+reach_agents=$(tr -d '[:space:]' < "$REACH_OUT")
+if [ "${reach_agents:-0}" = "0" ]; then
+  echo "ERROR reachability_zero_agents image=$IMAGE" >&2
+  echo "       After simulated GHA HOME override + cp -r, no agent *.md files found under \$HOME/.claude/agents." >&2
+  echo "       This means the overlay tree would be orphaned at job runtime." >&2
+  cat "$REACH_STDERR" >&2
+  exit 1
+fi
+echo "smoke-test: reachability probe OK (${reach_agents} agent files discoverable via simulated \$HOME)"
 
 # ---- (b) Inventory assertions (Phase 3+; skipped for base) -----------------
 # EXPECTED_FILE matcher contract (specified in Phase 2; consumed in Phase 3+):
