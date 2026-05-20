@@ -584,8 +584,13 @@ ops agent will assign actual issue numbers when filing.
   from § 10.
 - **#L — (Post-cutover, +30 days) Delete GHCR images.** Manual GHCR UI on
   `claude-runtime-{base,review,fix,explain}`.
-- **#M — Audit external consumers pinned to `v2`.** Survey before `v3`
-  release; notify of breaking-change nature.
+- **#M — Audit external consumers pinned to `v2`.** Survey post-release in
+  parallel with `#L` (GHCR-deletion clock prep). Notify each consumer of the
+  breaking-change nature of `v3` and the upcoming GHCR image deletions.
+  **Audit completion gates the start of the 30-day GHCR-deletion grace window
+  (see §9 row 12).** This decouples release timing from audit completion — the
+  cutover can proceed against the OAuth deadline without `#M` becoming a
+  release blocker.
 - **#N — Document shadow-mode kill-criteria observations.** A short results
   log (PR count, false-positive comparison, latency, decision) extracted from
   shadow mode and attached to whichever sub-issue closes the decision gate.
@@ -635,9 +640,12 @@ before #A is filed.
    (option 2 in § 7). Confirm this matches the user's risk tolerance — if a P1
    finding emits `COMMENTED` (undocumented behavior), option 2 would let it
    merge.
-3. **External consumer audit timing.** Sub-issue #M is listed post-release in
-   § 9. Should it run **before** the `v3` cut instead, to give consumers a
-   migration window?
+3. **External consumer audit timing (resolved 2026-05-20).** Decided: #M stays
+   post-release in §9 row 12, but the 30-day GHCR-deletion grace window does
+   NOT start at v3 release — it starts when #M completes. This gives consumers
+   a full 30 days of notice from audit-completion without making #M a release
+   blocker on the OAuth-deadline path. See §9 row 12 and `#M`'s body for the
+   resolved semantics.
 4. **`AGENTS.md` voice and detail.** The PR-review prompt at
    `pr-review/action.yml:L1–L696` is verbose and Claude-specific. How much
    of it translates verbatim vs. gets rewritten for Codex's conventions? (The
