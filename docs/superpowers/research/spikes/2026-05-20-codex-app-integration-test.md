@@ -26,12 +26,22 @@ If the App **does not** extend to org-owned repos, the spec stays on its current
 
 This is the part the router cannot automate — App installation requires browser-side OAuth consent.
 
-1. **Install the Codex GitHub App.** Open [https://github.com/apps/codex](https://github.com/apps/codex) (or follow the link from [developers.openai.com/codex](https://developers.openai.com/codex) → "Connect GitHub").
-2. **Authorize against the `glitchwerks` org.** Choose the install scope:
-   - Recommended for the spike: **this repo only** (`glitchwerks/github-actions`). Narrower blast radius if the App posts unexpected things.
-   - Alternative: org-wide. Faster if the answer is "yes, it works" and you want broad coverage immediately.
-3. **Wait up to 30 minutes** for the first review to post. App-triggered reviews are not instantaneous; the cloud-side sandbox needs to clone, index, and run.
-4. **Record observations in issue #275** using the checklist below.
+The official integration is the **ChatGPT Codex Connector** GitHub App at [github.com/apps/chatgpt-codex-connector](https://github.com/apps/chatgpt-codex-connector) (the bare `github.com/apps/codex` URL is a different, unrelated private app). The supported install flow is via the OpenAI side, not by visiting the App page directly:
+
+1. **Go to Codex** at [chatgpt.com/codex](https://chatgpt.com/codex) (logged in with the ChatGPT account that has the Plus/Pro subscription).
+2. **Open Codex Settings** and locate the **GitHub** connector. Click **Connect**. You'll be redirected to GitHub's authorization page for the ChatGPT Codex Connector App.
+3. **Authorize against the `glitchwerks` org** and choose the install scope:
+   - Recommended for the spike: **only `glitchwerks/github-actions`**. Narrow blast radius.
+   - Alternative: All repositories or any subset.
+4. **Back in Codex Settings → Code review**, find the entry for `glitchwerks/github-actions` and toggle **Code review** on. Then either:
+   - Toggle **Automatic reviews** so Codex reviews every new PR (preferred for the spike — it will pick up PR #276 automatically), or
+   - Leave it off and post `@codex review` as a comment on PR #276 to trigger manually.
+5. **Wait up to 30 minutes** for the first review to post. App-triggered reviews are not instantaneous; the cloud-side sandbox clones, indexes, and runs.
+6. **Record observations in issue #275** using the checklist below.
+
+> **Known footgun (community thread, March 2026):** some users hit "GitHub connector connected but unusable for private repos — OAuth token scope never applies." If the connector shows as connected in Codex Settings but the repo list is empty or stuck, the workaround per the [community thread](https://community.openai.com/t/github-connector-connected-but-unusable-for-private-repos-oauth-token-scope-never-applies/1365065) is to **revoke and re-authorize** from the GitHub side (Settings → Applications → ChatGPT Codex Connector → Revoke). `glitchwerks/github-actions` is public so this likely won't bite, but worth knowing.
+>
+> **EMU note:** for GitHub Enterprise Managed Users, an org owner must install the App for the org before users can connect repos. Doesn't apply to `glitchwerks` (personal org).
 
 ## Observation checklist
 
