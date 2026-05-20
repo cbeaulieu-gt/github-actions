@@ -36,6 +36,9 @@ touches:
   - lint-apply/action.yml
   # Runtime tree (delete)
   - runtime/**
+  # Consumer-facing surface (rewrite for v3)
+  - examples/**
+  - docs/consumer-onboarding.md
   # Docs and consumer surface
   - CLAUDE.md
   - README.md
@@ -121,11 +124,14 @@ spec retains only the load-bearing facts.
 ### 3.1 `openai/codex-action@v1.8` — write-side action
 
 Currently published at **`v1.8`**; `@v1` floating tag tracks the v1 major.
-**Pinning policy:** Rev 2 pins workflows at `openai/codex-action@v1` (floating
-major) **only after** SHA-pinning every other third-party action in the same
-file; if `openai/codex-action` ships a breaking change inside v1, all migrated
-workflows fail loudly at once rather than silently drift. Revisit after the
-first three months in production.
+**Pinning policy.** `openai/codex-action` is pinned at `@v1` as a starting
+point. If a breaking change is observed in the first 90 days post-cutover
+(defined: any composite-action behavior regression, input/output schema change,
+or sandbox-mode default flip), promote the pin to a SHA digest captured at the
+last-known-good run. SHA-pinning of `actions/checkout`, `actions/create-github-app-token`,
+and other third-party actions in the same composite action is a separate concern
+tracked under sub-issue #L (or file a new sub-issue if #L doesn't cover it) and
+is NOT a prerequisite for the `@v1` major-tag pin.
 
 Key inputs (unchanged from v1 spec, retained verbatim for reference):
 
@@ -309,7 +315,10 @@ extract-then-delete drill.
 deleted after the cutover lands and a **30-day grace window** passes (in case
 any external consumer pinned digests directly). Manual GHCR UI operation.
 **unverified:** no audit of external consumers' digest pins; the grace window
-is a defensive default, not measured.
+is a defensive default, not measured. **Sequencing:** sub-issue #M
+(external-consumer audit) MUST complete before the 30-day grace window starts,
+so digest-pinned consumers receive a full 30 days of notice from the
+audit-completion date rather than from the v3 release date.
 
 **Secrets retired:** `GH_PAT` (only used by `runtime-build.yml`).
 
@@ -342,30 +351,54 @@ discarded") is captured as a decision-log entry on the closing PR for sub-issue
 on:
   pull_request_review:
     types: [submitted, edited, dismissed]
+
+permissions:
+  statuses: write
+  pull-requests: read
+
 jobs:
   gate:
     if: github.event.review.user.login == 'chatgpt-codex-connector[bot]'
-    permissions: { statuses: write, pull-requests: read }
     runs-on: ubuntu-latest
     steps:
-      - name: Post quality-gate status
+      - name: Fail if head SHA was empty
+        if: github.event.pull_request.head.sha == ''
         run: |
-          STATE='${{ github.event.review.state }}'
-          if [ "$STATE" = "changes_requested" ]; then
+          echo "::error::pull_request.head.sha was empty — gate cannot post a commit status."
+          exit 1
+
+      - name: Post quality-gate status
+        if: github.event.pull_request.head.sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_STATE: ${{ github.event.review.state }}
+          BOT_LOGIN: ${{ github.event.review.user.login }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$REVIEW_STATE" = "changes_requested" ]; then
             CONCLUSION=failure
+            DESCRIPTION="Codex requested changes — see the bot review for details"
           else
             CONCLUSION=success
+            DESCRIPTION="Codex review state: $REVIEW_STATE"
           fi
-          gh api repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }} \
+          gh api repos/${{ github.repository }}/statuses/$HEAD_SHA \
             -f context='codex-pr-review/quality-gate' \
-            -f state="$CONCLUSION"
+            -f state="$CONCLUSION" \
+            -f description="$DESCRIPTION"
 ```
 
 The bot-login filter (`github.event.review.user.login == 'chatgpt-codex-connector[bot]'`)
-addresses Reviewer BLOCKING #1 / CONCERN #5: only Codex's reviews trip the gate,
-not arbitrary reviewers. Human approvers can still `APPROVE` / `REQUEST CHANGES`
-in parallel — those routes through branch protection's normal required-reviewer
-config, not this status check.
+on the `gate` job's `if:` condition addresses Reviewer BLOCKING #1 / CONCERN #5:
+only Codex's reviews trip the gate, not arbitrary reviewers. Human approvers can
+still `APPROVE` / `REQUEST CHANGES` in parallel — those route through branch
+protection's normal required-reviewer config, not this status check.
+
+**Permissions** are declared at the **workflow level** (`permissions: { statuses:
+write, pull-requests: read }` at the top of the file, not inside the job) per the
+key convention in CLAUDE.md — GitHub ignores job-level permissions when calling
+reusable workflows, and consistent top-level placement makes the grant surface
+auditable at a glance.
 
 **Branch-protection ruleset rename** (in lockstep with cutover): required check
 `claude-pr-review/quality-gate` → `codex-pr-review/quality-gate`. Both names
@@ -374,7 +407,7 @@ go decision is made.
 
 ## 8. Shadow Mode (NEW — addresses BLOCKING #3)
 
-**Duration:** **≥7 days OR ≥30 real (non-synthetic) PRs, whichever is greater.**
+**Duration:** ≥7 days AND ≥N real (non-synthetic) PRs observed, where N is the lesser of (a) 30 PRs and (b) whatever volume the repo organically produces in a 14-day window. Concretely: shadow mode ends at the later of the 7-day mark and the moment at least 7 PRs have been processed by both reviewers. If 30+ PRs are achieved in that window (unlikely at observed cadence), so much the better — but the count threshold is advisory, not blocking. If after 14 days the PR count is still below 7, the cutover proceeds on time alone with an explicit caveat recorded on the decision-gate sub-issue noting the limited sample size.
 
 **Setup:**
 
@@ -419,7 +452,7 @@ of buffer.
 | 2 | #B (`codex-gate.yml`) | Provides replacement signal before removing old one |
 | 3 | #C (branch protection — add new) | Both names required during transition |
 | 4 | **SHADOW MODE WINDOW (§ 8)** | Both gates required; ≥7 days / ≥30 PRs |
-| 5 | **DECISION GATE** (go/no-go) | Explicit user call |
+| 5 | **DECISION GATE** (go/no-go) | Explicit user call; requires #O resolved (synchronize-event behavior confirmed) |
 | 6 | #D, #E, #F (write-side migrations) — parallel | apply-fix, lint-failure, ci-failure |
 | 7 | #G (retire verb router) | Last workflow migration |
 | 8 | #H (drop `claude-pr-review/quality-gate` requirement) | After every Claude workflow gone |
@@ -427,6 +460,12 @@ of buffer.
 | 10 | #J (docs: CLAUDE.md, README.md, examples) | Stabilize before tagging |
 | 11 | #K (cut `v3.0.0`) | Cutover complete |
 | 12 | #L, #M (GHCR image deletion +30d, external-consumer audit) | Post-release cleanup |
+
+**Atomicity note — #G (retire verb router).** Sub-issue #G's PR must delete
+`claude-tag-respond.yml`, `tag-claude/`, `claude-command-router/`, and
+`check-auth/` in a single PR — not piecemeal. The four files form an
+interconnected verb-router; partial deletion creates a partially-routed surface
+that exists until the final piece lands.
 
 **Hard deadline:** Anthropic OAuth EOL ~2026-06-20. Shadow mode must start by
 ~2026-05-27 to keep the window inside the deadline with buffer.
@@ -457,10 +496,14 @@ either vague at consumer site or collision-prone with retained legacy names.
 
 **Reviewer BLOCKING #4 — consumer onboarding files:**
 
-- **`examples/` directory:** verified to **not exist** as of 2026-05-20 (Glob
-  returned no matches). No rewrite scope here, but if the user creates this
-  directory before cutover, it must be added to the migration plan.
-- **`docs/consumer-onboarding.md`:** verified to **not exist**. Same.
+- **`examples/` directory and `docs/consumer-onboarding.md`:** Both exist on
+  main. `examples/` contains 5 caller-workflow templates plus a README
+  (`examples/{README.md,claude-apply-fix.yml,claude-ci-failure.yml,claude-lint-failure.yml,claude-pr-review.yml,claude-tag-respond.yml}`).
+  `docs/consumer-onboarding.md` also exists. Both reference
+  `CLAUDE_CODE_OAUTH_TOKEN`, GHCR overlay packages, and `claude-*.yml@v2`
+  `uses:` lines — all of which become invalid post-v3. They are added to
+  `touches:` and to sub-issue #J's scope explicitly. (The planner's original
+  Glob verification was a false negative; corrected 2026-05-20 by project-reviewer.)
 - **`README.md`:** verified via Grep to contain `CLAUDE_CODE_OAUTH_TOKEN`,
   `ghcr.io/glitchwerks/claude-runtime-*` digest pins, and `claude-*.yml@v2`
   `uses:` examples. **Full rewrite required** as part of sub-issue #J.
@@ -474,6 +517,13 @@ ops agent will assign actual issue numbers when filing.
 - **#A — Stand up Codex GitHub App + initial `AGENTS.md`.** Cloud-side App
   install, configure auto-review, write top-level `AGENTS.md` translating the
   inline prompt from `pr-review/action.yml`. Verify on a throwaway PR.
+  **Acceptance:** AGENTS.md is verified adequate by triggering Codex review on
+  a throwaway test PR that contains at least one defect of a class the existing
+  Claude `pr-review` prompt's domain-specific guidance was designed to catch
+  (e.g. an unquoted shell variable expansion in a composite action's bash step,
+  or a missing `packages: read` on a container-pinned workflow). If Codex's
+  review surfaces that finding, AGENTS.md is adequate. If not, iterate on the
+  AGENTS.md content and re-test before merging.
 - **#B — Build `codex-gate.yml`.** Posts `codex-pr-review/quality-gate` based
   on Codex App review state. Filter to bot login per § 7. Depends on #A.
 - **#C — Branch-protection ruleset update (transition).** Add
@@ -493,10 +543,19 @@ ops agent will assign actual issue numbers when filing.
   Final cutover step after all Claude workflows removed.
 - **#I — Delete `runtime/` tree.** All files in § 6, all six runtime workflows.
   Extract durable matcher-test guidance and runtime decision-log per § 6 first.
-- **#J — Update `CLAUDE.md`, `README.md`, retire legacy runtime spec/plan.**
-  Architecture rewrite, secrets table refresh, consumer-facing examples
-  rewritten. Mark and delete legacy runtime spec + plan files per CLAUDE.md
-  lifecycle rule (durable content extracted first).
+- **#J — Rewrite consumer examples + onboarding for v3.** Rewrite
+  `examples/{README.md,claude-apply-fix.yml,claude-ci-failure.yml,claude-lint-failure.yml,claude-pr-review.yml,claude-tag-respond.yml}`
+  and `docs/consumer-onboarding.md` to remove `CLAUDE_CODE_OAUTH_TOKEN`
+  references, GHCR overlay package install steps, and `claude-*.yml@v2`
+  `uses:` lines. Replace with the post-cutover surface (`codex-*.yml@v3`,
+  `OPENAI_API_KEY` secret, and the App-handled PR-review path which requires
+  no caller-workflow file). Also update `CLAUDE.md` and `README.md`
+  (architecture rewrite, secrets table refresh) and retire legacy runtime
+  spec + plan files per CLAUDE.md lifecycle rule (durable content extracted
+  first). Acceptance: a fresh consumer following the rewritten
+  examples/onboarding can complete setup against
+  `glitchwerks/github-actions@v3` without any reference to retired surfaces.
+  **Gating sub-issue — must merge before `v3` tag is cut.**
 - **#K — Cut `v3.0.0` release.** Move `v3` floating tag, freeze `v2` at last
   Claude-era commit, write release notes documenting all breaking changes
   from § 10.
@@ -507,6 +566,22 @@ ops agent will assign actual issue numbers when filing.
 - **#N — Document shadow-mode kill-criteria observations.** A short results
   log (PR count, false-positive comparison, latency, decision) extracted from
   shadow mode and attached to whichever sub-issue closes the decision gate.
+- **#O — Verify Codex App `synchronize`-event behavior before retiring
+  `claude-pr-review.yml`.** The current Claude pr-review handles `synchronize`
+  events by reviewing only new commits (`git diff before..after`). Codex's
+  documented triggers are PR open, draft→ready, and `@codex review` comment —
+  `synchronize` is not explicitly listed. Before the cutover decision-gate in
+  §9, run a controlled test: open a PR with the Codex App enabled, push a
+  follow-up commit, observe whether the App posts a fresh review automatically.
+  **Outcomes and fallbacks:**
+  - **App auto-reviews on `synchronize`:** no action needed; Claude can be
+    retired on schedule.
+  - **App does NOT auto-review on `synchronize`:** the cutover plan must add
+    either (a) a small `codex-synchronize-trigger.yml` workflow that posts
+    `@codex review` on synchronize events, or (b) accept reduced review
+    coverage on push-after-open and document it in `examples/README.md`.
+  **Gating:** this sub-issue MUST resolve before the §9 decision gate. Do NOT
+  delete `claude-pr-review.yml` without an answer.
 
 ## 12. Out of Scope
 
@@ -524,9 +599,9 @@ ops agent will assign actual issue numbers when filing.
 These are questions Rev 2 cannot answer in writing. The user should resolve
 before #A is filed.
 
-1. **Shadow-mode window length.** Spec proposes **≥7 days OR ≥30 PRs, whichever
-   is greater.** The PR-volume threshold may be unreachable in a 7-day window
-   for this repo's actual cadence. Confirm or adjust.
+1. **Shadow-mode window length (resolved 2026-05-20 by reviewer feedback).**
+   Volume threshold is advisory, not blocking. 7 days + 7 observed PRs is
+   the binding floor; ≥30 PRs is aspirational. See §8 for the rationale.
 2. **Severity threshold for `CHANGES_REQUESTED`.** Spike #275 observed
    `COMMENTED` on a P2 finding; the spec recommends gating on `!= CHANGES_REQUESTED`
    (option 2 in § 7). Confirm this matches the user's risk tolerance — if a P1
