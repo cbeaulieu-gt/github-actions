@@ -27,7 +27,7 @@ Sources: [developers.openai.com/codex](https://developers.openai.com/codex) (fet
 
 **What it is.** A browser-based cloud environment (also called "Codex web") where tasks run in isolated per-task sandboxes, each preloaded with the user's repository checkout. Codex can work on multiple tasks in parallel in the background. Users configure repository access, setup steps, and tools; Codex reads, edits, and runs code inside the sandbox, then proposes changes as pull requests.
 
-**Maturity.** Generally available as of the 2026 Codex launch; included in Plus and above.
+**Maturity.** Generally available as of the 2026 Codex launch. The sandboxed cloud-task surface (this section) is included in Plus and above; Free and Go plan users have limited access to Codex Cloud tasks specifically (see subscription tiers below). Free and Go users retain access to other Codex surfaces (CLI, IDE integrations, mobile), but the cloud-task sandbox — background parallel tasks, repository checkout in an isolated container, PR proposal — requires Plus or above. "Codex" as an umbrella term covers all plans with usage limits; "Codex Cloud" (this surface) is the Plus-and-above constraint.
 Source: [developers.openai.com/codex/cloud](https://developers.openai.com/codex/cloud) (fetched 2026-05-20), [openai.com/index/codex-now-generally-available/](https://openai.com/index/codex-now-generally-available/) (fetched 2026-05-20).
 
 **How invoked.** Through the ChatGPT web interface at `chatgpt.com/codex`, or via `@codex` mentions on GitHub Issues and PRs (cloud tasks). Also invocable from the Codex CLI plugin-for-Claude-Code (`/codex:rescue`).
@@ -157,7 +157,8 @@ Source: [github.com/openai/codex-action/blob/main/action.yml](https://github.com
 |--------|-------------|
 | `final-message` | Raw text output from `codex exec` |
 
-**Supported event triggers.** Event-agnostic: any GitHub Actions event that allows `actions/checkout` before the step will work (`pull_request`, `push`, `workflow_run`, `issue_comment`, `workflow_dispatch`, `schedule`, etc.).
+**Supported event triggers.** Event-agnostic: any GitHub Actions event that allows `actions/checkout` before the step will work (`pull_request`, `push`, `workflow_run`, `issue_comment`, `workflow_dispatch`, `schedule`, etc.), **with one critical exception:** `pull_request` events from forked repositories (and Dependabot-authored PRs, which GitHub treats as fork-equivalent) do not receive repository secrets — `OPENAI_API_KEY` will be undefined and the action will fail authentication. For fork-friendly review automation, use `pull_request_target` (which runs in the base-repo context with secrets available) or queue fork reviews via a separate workflow triggered against the merged base. The Codex GitHub App integration (§2.2), by contrast, runs cloud-side under OpenAI's own identity and does not have this constraint.
+Source: [docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions](https://docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions) (fetched 2026-05-20).
 
 **Sandbox modes.**
 
@@ -567,14 +568,14 @@ Source: [openai.com/index/harness-engineering/](https://openai.com/index/harness
 
 ### 6.1 Subscription Tier Matrix
 
-| Surface | Free | Go ($8) | Plus ($20) | Pro ($100) | Pro ($200) | Business (PAYG) | Enterprise |
-|---------|------|---------|-----------|-----------|-----------|----------------|------------|
-| Codex Cloud (web tasks) | Limited | `unverified:` | Included | Included | Included | Included | Included (admin setup required) |
-| GitHub App integration | `unverified:` | `unverified:` | Included | Included | Included | Included | Included |
-| Codex CLI (ChatGPT auth) | Limited | `unverified:` | Included | Included | Included | Included | Included |
-| Codex CLI (API key) | API billing only (no subscription) | API billing only | API billing only | API billing only | API billing only | API billing only | API billing only |
-| `openai/codex-action` | API billing only | API billing only | API billing only | API billing only | API billing only | API billing only | API billing only |
-| Responses API | API billing only | API billing only | API billing only | API billing only | API billing only | API billing only | API billing only |
+| Surface | Free | Go ($8) | Plus ($20) | Pro (`unverified:` $100/mo; internal rate-limit tiers within Pro are not exposed as distinct plan names in the pricing docs) | Business (PAYG) | Enterprise |
+|---------|------|---------|-----------|-----------|----------------|------------|
+| Codex Cloud (web tasks) | Limited | `unverified:` | Included | Included | Included | Included (admin setup required) |
+| GitHub App integration | `unverified:` | `unverified:` | Included | Included | Included | Included |
+| Codex CLI (ChatGPT auth) | Limited | `unverified:` | Included | Included | Included | Included |
+| Codex CLI (API key) | API billing only (no subscription) | API billing only | API billing only | API billing only | API billing only | API billing only |
+| `openai/codex-action` | API billing only | API billing only | API billing only | API billing only | API billing only | API billing only |
+| Responses API | API billing only | API billing only | API billing only | API billing only | API billing only | API billing only |
 
 Key principle: **subscription credits do not apply to CI automation** (Action or headless CLI with API key). CI usage is billed at API rates regardless of subscription tier.
 Source: [developers.openai.com/codex/pricing](https://developers.openai.com/codex/pricing) (fetched 2026-05-20), [blog.laozhang.ai/en/posts/codex-api-key-vs-subscription](https://blog.laozhang.ai/en/posts/codex-api-key-vs-subscription) (fetched 2026-05-20).
@@ -609,7 +610,9 @@ Source: [developers.openai.com/codex/pricing](https://developers.openai.com/code
 
 ### 6.4 Rate Limits Relevant to CI Burst Patterns
 
-For `gpt-5-codex` at Tier 1 (default new API accounts): 500 RPM, 500K TPM. For a team running 50 concurrent PRs each triggering a review simultaneously, each review using a single API call, Tier 1 is adequate on RPM alone — but the 500K TPM ceiling is the binding constraint for full-context diffs: at 50K tokens/review, 50 simultaneous reviews would require 2.5M tokens, ~5× the TPM limit, throttling effective burst concurrency to roughly 10 reviews at a time. For sustained burst patterns (e.g., a merge queue processing 100+ PRs at once), Tier 2 (5,000 RPM, 1M TPM) is recommended.
+For `gpt-5-codex` at Tier 1 (default new API accounts): 500 RPM, 500K TPM. For a team running 50 concurrent PRs each triggering a review simultaneously, each review using a single API call, Tier 1 is adequate on RPM alone — but the 500K TPM ceiling is the binding constraint for full-context diffs: at 50K tokens/review, 50 simultaneous reviews would require 2.5M tokens, ~5× the TPM limit, throttling effective burst concurrency to roughly 10 reviews at a time.
+
+For sustained burst patterns (e.g., a merge queue processing 100+ PRs at once), the TPM math does not support Tier 2: 100 PRs × 50K tokens/review = 5M tokens required, which exceeds Tier 2's 1M TPM ceiling by 5×, Tier 3's 2M TPM by 2.5×, and Tier 4's 4M TPM by 1.25×. The first standard tier that accommodates a 100-PR burst without throttling is **Tier 5 (15,000 RPM, 10M TPM)**. If Tier 5 is not available (it requires substantial API spend history), the realistic alternatives are: (a) rate-limit ingress so no more than ~20 reviews fire simultaneously (Tier 2 headroom), or (b) batch reviews with a queue that respects the active tier's TPM ceiling. There is no standard tier between Tier 4 and Tier 5 that covers the full 5M TPM requirement.
 
 Rate limit tiers are determined by API usage history and spend, not by subscription. New API accounts start at Tier 1.
 Source: [developers.openai.com/api/docs/models/gpt-5-codex](https://developers.openai.com/api/docs/models/gpt-5-codex) (fetched 2026-05-20).
