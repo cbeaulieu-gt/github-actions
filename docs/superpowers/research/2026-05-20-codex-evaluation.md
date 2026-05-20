@@ -158,6 +158,14 @@ Source: [github.com/openai/codex-action/blob/main/action.yml](https://github.com
 | `final-message` | Raw text output from `codex exec` |
 
 **Supported event triggers.** Event-agnostic: any GitHub Actions event that allows `actions/checkout` before the step will work (`pull_request`, `push`, `workflow_run`, `issue_comment`, `workflow_dispatch`, `schedule`, etc.), **with one critical exception:** `pull_request` events from forked repositories (and Dependabot-authored PRs, which GitHub treats as fork-equivalent) do not receive repository secrets — `OPENAI_API_KEY` will be undefined and the action will fail authentication. For fork-friendly review automation, use `pull_request_target` (which runs in the base-repo context with secrets available) or queue fork reviews via a separate workflow triggered against the merged base. The Codex GitHub App integration (§2.2), by contrast, runs cloud-side under OpenAI's own identity and does not have this constraint.
+
+> **Critical safety caveat for `pull_request_target`:** `pull_request_target` runs in the base-repo context with secrets, but the default `actions/checkout` step without arguments checks out the base ref — not the PR head. If a workflow under `pull_request_target` explicitly checks out the PR head (e.g., `with: ref: ${{ github.event.pull_request.head.sha }}`), it executes potentially-malicious code from the fork with full base-repo permissions, including secrets and write tokens. This is the well-known "pwn request" attack pattern. Mitigations:
+> - Do NOT check out PR head code under `pull_request_target` unless absolutely necessary; if you must, gate on `author_association` (OWNER / MEMBER / COLLABORATOR) before any step that executes PR code.
+> - Prefer a queued-review pattern where a workflow under `pull_request_target` only posts a review comment based on the diff text, not by executing PR code.
+> - For `openai/codex-action` specifically: the action reads the diff via API (not via checked-out PR code), so it can run under `pull_request_target` safely provided no other step in the same job checks out fork code with `ref: ${{ github.event.pull_request.head.sha }}`.
+>
+> Source: [securitylab.github.com/research/github-actions-preventing-pwn-requests/](https://securitylab.github.com/research/github-actions-preventing-pwn-requests/) (fetched 2026-05-20).
+
 Source: [docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions](https://docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions) (fetched 2026-05-20).
 
 **Sandbox modes.**
@@ -244,7 +252,7 @@ Source: [developers.openai.com/codex/noninteractive](https://developers.openai.c
 - Item types: agent messages, reasoning, command executions, file changes, MCP calls, web searches.
 
 **Authentication in CI.**
-- `CODEX_API_KEY=<key>` environment variable (recommended).
+- `OPENAI_API_KEY=<key>` environment variable (recommended).
 - Enterprise: `~/.codex/auth.json` for ChatGPT-managed auth (treated as a password; not for sharing).
 
 **MCP configuration.** Stored in `~/.codex/config.toml` (user-level) or `.codex/config.toml` (project-level, trusted projects only). Not `.mcp.json`.
@@ -264,7 +272,7 @@ Source: [developers.openai.com/codex/noninteractive](https://developers.openai.c
 |----------|---------------|------------|-----------|------------|------------|-------|
 | `gpt-5-codex` | 400,000 tokens | 128,000 tokens | $1.25 | $0.125 | $10.00 | Responses API only; optimized for agentic coding |
 | `gpt-5.3-codex` | `unverified:` | `unverified:` | $1.75 (std) / $3.50 (priority) | $0.175 / $0.35 | $14.00 / $28.00 | Standard and Priority processing tiers |
-| `gpt-5.5` | 1,000,000 tokens | `unverified:` | See ChatGPT pricing page | — | — | General-purpose; cookbook recommends for code review accuracy |
+| `gpt-5.5` | 1,000,000 tokens | `unverified:` | `unverified:` (API pricing page returned 403 at write time; see [developers.openai.com/api/docs/pricing](https://developers.openai.com/api/docs/pricing), fetched 2026-05-20) | — | — | General-purpose; cookbook recommends for code review accuracy |
 | `gpt-5.4` | `unverified:` | `unverified:` | 62.50 credits/1M (Business tier) | 6.25 credits/1M | 375 credits/1M | — |
 | `gpt-5.4-mini` | `unverified:` | `unverified:` | 18.75 credits/1M (Business tier) | 1.875 credits/1M | 113 credits/1M | — |
 
@@ -526,12 +534,12 @@ When MCP servers or tools must be active (e.g., Codex needs to read files during
 | `drop-sudo` breaking later steps | `drop-sudo` is irreversible within a job. Downstream steps requiring `sudo` fail. Documented workaround: separate jobs on fresh runners. | [github.com/openai/codex-action](https://github.com/openai/codex-action) README (fetched 2026-05-20) |
 | Automatic reviews on creation only | GitHub App integration auto-reviews fire on PR creation, not on `synchronize` (new commits). Re-review on updates requires a manual `@codex review` comment. | [developers.openai.com/codex/integrations/github](https://developers.openai.com/codex/integrations/github) (fetched 2026-05-20) |
 | Line number accuracy in comments | Codex sometimes produces incorrect file paths or line numbers in inline comments; GitHub rejects anchors that don't match the diff. Requires prompt reinforcement. | [developers.openai.com/cookbook/examples/codex/build_code_review_with_codex_sdk](https://developers.openai.com/cookbook/examples/codex/build_code_review_with_codex_sdk) (fetched 2026-05-20) |
-| April 9 limit model change | Limits shifted from message-count to reasoning-time measurement, burning subscription budgets up to 3.2× faster per minute on Business tier. Iterative CI workflows are disproportionately affected. | [community.openai.com/t/understanding-the-new-codex-limit-system-after-the-april-9-update/1378768](https://community.openai.com/t/understanding-the-new-codex-limit-system-after-the-april-9-update/1378768) (fetched 2026-05-20) |
-| Business tier limit regression | Business tier Codex limits regressed significantly in the April 9 update; community reports of users canceling due to "unmanageable" usage. | Same source as above. |
+| April 9 limit model change | Limits shifted from message-count to reasoning-time measurement. `unverified — community estimate:` budgets burn up to 3.2× faster per minute on Business tier; primary OpenAI documentation confirming the multiplier was not located. Iterative CI workflows are disproportionately affected. | [community.openai.com/t/understanding-the-new-codex-limit-system-after-the-april-9-update/1378768](https://community.openai.com/t/understanding-the-new-codex-limit-system-after-the-april-9-update/1378768) (fetched 2026-05-20) |
+| Business tier limit regression | `unverified — community estimate:` Business tier Codex limits regressed significantly in the April 9 update; community reports of users canceling due to "unmanageable" usage. No primary OpenAI changelog or blog post confirming the specific regression magnitude was located. | Same source as above. |
 | Azure DevOps inline comment anchoring | `changeTrackingId` mapping is fragile; inline comments may fail silently. Must be validated per project before relying on in a required branch policy. | [developers.openai.com/cookbook/examples/codex/build_code_review_with_codex_sdk](https://developers.openai.com/cookbook/examples/codex/build_code_review_with_codex_sdk) (fetched 2026-05-20) |
 | API key mode excludes cloud features | Switching to API key (required for CI) disables Codex Cloud, GitHub App integration, Slack integration, and cloud-feature model rollout priority. | [blog.laozhang.ai/en/posts/codex-api-key-vs-subscription](https://blog.laozhang.ai/en/posts/codex-api-key-vs-subscription) (fetched 2026-05-20) |
 
-**Harness engineering case study.** OpenAI published a case study about an internal team that built an entire software project using Codex, producing ~1,500 PRs over 5 months with a 3–7 person team. The key patterns: every PR had CI, every CI run was reviewed by Codex, and scope was tightly bounded ("do not refactor unrelated code"). Full article is behind a 403 on direct fetch; summary retrieved via search.
+**Harness engineering case study.** OpenAI published a case study about an internal team that built an entire software project using Codex. `unverified:` figures extracted from search snippets only — primary article returned 403 on direct fetch at write time, so the following metrics may be incomplete or imprecise: approximately 1,500 PRs over 5 months with a 3–7 person team. The key patterns described in snippets: every PR had CI, every CI run was reviewed by Codex, and scope was tightly bounded ("do not refactor unrelated code"). These figures are not confirmed from the primary source.
 Source: [openai.com/index/harness-engineering/](https://openai.com/index/harness-engineering/) (search-retrieved 2026-05-20; direct fetch returned 403).
 
 ---
