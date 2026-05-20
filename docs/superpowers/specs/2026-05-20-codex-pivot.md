@@ -364,10 +364,12 @@ jobs:
       - name: Fail if head SHA was empty
         if: github.event.pull_request.head.sha == ''
         run: |
-          echo "::error::pull_request.head.sha was empty — gate cannot post a commit status."
+          echo "::error::pull_request.head.sha was empty (possible webhook payload issue or unusual event type). Gate cannot post commit status. Check the PR event payload or re-trigger the review."
           exit 1
 
       - name: Post quality-gate status
+        # defensive: prior step already fails on empty SHA, but this guards
+        # against step-skipping due to manual workflow_dispatch or unusual event shape
         if: github.event.pull_request.head.sha != ''
         env:
           GH_TOKEN: ${{ github.token }}
@@ -407,7 +409,11 @@ go decision is made.
 
 ## 8. Shadow Mode (NEW — addresses BLOCKING #3)
 
-**Duration:** ≥7 days AND ≥N real (non-synthetic) PRs observed, where N is the lesser of (a) 30 PRs and (b) whatever volume the repo organically produces in a 14-day window. Concretely: shadow mode ends at the later of the 7-day mark and the moment at least 7 PRs have been processed by both reviewers. If 30+ PRs are achieved in that window (unlikely at observed cadence), so much the better — but the count threshold is advisory, not blocking. If after 14 days the PR count is still below 7, the cutover proceeds on time alone with an explicit caveat recorded on the decision-gate sub-issue noting the limited sample size.
+**Duration:** ≥7 days AND ≥7 real (non-synthetic) PRs observed, with a maximum window of 14 days.
+
+- **Minimum:** 7 days + 7 PRs — both must be met before the decision gate opens.
+- **Maximum:** 14 days — if the PR count is still below 7 at day 14, the cutover proceeds on time alone with an explicit caveat recorded on the decision-gate sub-issue noting the limited sample size.
+- **Aspirational:** 30 PRs if organically achieved within the window; additional data strengthens the decision but is not a blocking requirement.
 
 **Setup:**
 
@@ -419,6 +425,13 @@ go decision is made.
    PRs cannot merge unless both pass.
 5. The user manually compares Codex's and Claude's reviews on every PR that
    merges during the window.
+
+**Observation methodology.** During shadow mode, log observations on sub-issue
+#N in a table with at minimum these columns: `PR#` | `Claude finding count
+(by severity)` | `Codex finding count (by severity)` | `Findings unique to
+each` | `False-positive count (each side)` | `Codex latency (trigger →
+review-posted)`. The kill criteria (below) reference these columns directly —
+without structured logging, the criteria are unverifiable at decision-gate time.
 
 **Kill criteria (written, must be in spec):**
 
@@ -451,7 +464,7 @@ of buffer.
 | 1 | #A (App + `AGENTS.md`) | No code change; observable side-by-side with Claude |
 | 2 | #B (`codex-gate.yml`) | Provides replacement signal before removing old one |
 | 3 | #C (branch protection — add new) | Both names required during transition |
-| 4 | **SHADOW MODE WINDOW (§ 8)** | Both gates required; ≥7 days / ≥30 PRs |
+| 4 | **SHADOW MODE WINDOW (§ 8)** | Both gates required; ≥7 days + ≥7 PRs (14-day max) |
 | 5 | **DECISION GATE** (go/no-go) | Explicit user call; requires #O resolved (synchronize-event behavior confirmed) |
 | 6 | #D, #E, #F (write-side migrations) — parallel | apply-fix, lint-failure, ci-failure |
 | 7 | #G (retire verb router) | Last workflow migration |
@@ -459,7 +472,7 @@ of buffer.
 | 9 | #I (delete `runtime/` tree + six workflows) | After every consumer of overlay images migrated |
 | 10 | #J (docs: CLAUDE.md, README.md, examples) | Stabilize before tagging |
 | 11 | #K (cut `v3.0.0`) | Cutover complete |
-| 12 | #L, #M (GHCR image deletion +30d, external-consumer audit) | Post-release cleanup |
+| 12 | #L, #M (GHCR image deletion +30d, external-consumer audit) | Post-release cleanup. **Note:** the 30-day grace window does NOT start at v3 release; it starts when #M completes. This guarantees digest-pinned consumers receive a full 30 days of notice from audit-completion regardless of when #M finishes. |
 
 **Atomicity note — #G (retire verb router).** Sub-issue #G's PR must delete
 `claude-tag-respond.yml`, `tag-claude/`, `claude-command-router/`, and
@@ -504,6 +517,9 @@ either vague at consumer site or collision-prone with retained legacy names.
   `uses:` lines — all of which become invalid post-v3. They are added to
   `touches:` and to sub-issue #J's scope explicitly. (The planner's original
   Glob verification was a false negative; corrected 2026-05-20 by project-reviewer.)
+  Verified via `git ls-tree -r origin/main` on 2026-05-20: returned
+  `examples/{README.md,claude-apply-fix.yml,claude-ci-failure.yml,claude-lint-failure.yml,claude-pr-review.yml,claude-tag-respond.yml}`
+  and `docs/consumer-onboarding.md`.
 - **`README.md`:** verified via Grep to contain `CLAUDE_CODE_OAUTH_TOKEN`,
   `ghcr.io/glitchwerks/claude-runtime-*` digest pins, and `claude-*.yml@v2`
   `uses:` examples. **Full rewrite required** as part of sub-issue #J.
@@ -555,6 +571,13 @@ ops agent will assign actual issue numbers when filing.
   first). Acceptance: a fresh consumer following the rewritten
   examples/onboarding can complete setup against
   `glitchwerks/github-actions@v3` without any reference to retired surfaces.
+  **Test method:** Use a throwaway repo (e.g., `cbeaulieu-gt/codex-pivot-consumer-test`
+  or a fresh personal repo) as the consumer test bed. The acceptance is met
+  when a clean checkout of that test repo, following only the rewritten
+  `examples/README.md` and `docs/consumer-onboarding.md`, can install the
+  Codex GitHub App, open a test PR, and observe a Codex review post — with
+  no reference to retired Claude/GHCR/OAuth surfaces in the consumer's
+  workflow.
   **Gating sub-issue — must merge before `v3` tag is cut.**
 - **#K — Cut `v3.0.0` release.** Move `v3` floating tag, freeze `v2` at last
   Claude-era commit, write release notes documenting all breaking changes
@@ -583,6 +606,11 @@ ops agent will assign actual issue numbers when filing.
   **Gating:** this sub-issue MUST resolve before the §9 decision gate. Do NOT
   delete `claude-pr-review.yml` without an answer.
 
+  **Timing:** Run this test as part of sub-issue #A (App setup) or #B
+  (`codex-gate.yml`), before the shadow mode window begins. This ensures any
+  fallback workflow (#O option (a) `codex-synchronize-trigger.yml`) can be
+  built in parallel with shadow-mode setup without delaying the decision gate.
+
 ## 12. Out of Scope
 
 - **`lint.yml` (actionlint)** — unaffected.
@@ -600,8 +628,8 @@ These are questions Rev 2 cannot answer in writing. The user should resolve
 before #A is filed.
 
 1. **Shadow-mode window length (resolved 2026-05-20 by reviewer feedback).**
-   Volume threshold is advisory, not blocking. 7 days + 7 observed PRs is
-   the binding floor; ≥30 PRs is aspirational. See §8 for the rationale.
+   Binding floor: ≥7 days AND ≥7 real PRs. Maximum: 14 days (cutover proceeds
+   on time even if <7 PRs, with caveat). ≥30 PRs is aspirational. See §8.
 2. **Severity threshold for `CHANGES_REQUESTED`.** Spike #275 observed
    `COMMENTED` on a P2 finding; the spec recommends gating on `!= CHANGES_REQUESTED`
    (option 2 in § 7). Confirm this matches the user's risk tolerance — if a P1
