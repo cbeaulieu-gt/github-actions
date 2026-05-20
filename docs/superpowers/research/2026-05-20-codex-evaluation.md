@@ -15,7 +15,7 @@ status: research-only — no recommendations
 
 ## 1. Executive Summary
 
-As of May 2026, OpenAI Codex is a multi-surface coding agent product bundled into ChatGPT subscription plans (Plus, Pro, Business, Edu, Enterprise) and accessible programmatically via the OpenAI Responses API. The product spans five surfaces: **Codex Cloud** (browser-based cloud execution environment), the **Codex GitHub integration** (an App-backed bot that reviews PRs and responds to `@codex` mentions), the **`openai/codex-action` GitHub Action** (a composable CI step), the **Codex CLI** (`@openai/codex` npm package, currently at v0.132.0 stable), and the **Responses API / Agents SDK** (programmatic access for orchestration). For CI automation, the two directly relevant surfaces are the GitHub Action (which installs the CLI and proxies the Responses API inside a runner) and the Responses API / Agents SDK (which provides programmatic orchestration without a GitHub-specific wrapper). The Codex Cloud and GitHub App integration are user-facing products that operate under OpenAI's own cloud infrastructure and require a ChatGPT identity login, making them suitable for developer-interactive workflows but constrained for fully headless automation that must run under a project-owned GitHub App identity.
+As of May 2026, OpenAI Codex is a multi-surface coding agent product bundled into all ChatGPT subscription plans — Free, Go ($8/mo), Plus ($20/mo), Pro, Business, Edu, and Enterprise (Free and Go carry strict usage limits; not viable for sustained CI loads) — and accessible programmatically via the OpenAI Responses API. The product spans five surfaces: **Codex Cloud** (browser-based cloud execution environment), the **Codex GitHub integration** (an App-backed bot that reviews PRs and responds to `@codex` mentions), the **`openai/codex-action` GitHub Action** (a composable CI step), the **Codex CLI** (`@openai/codex` npm package, currently at v0.132.0 stable), and the **Responses API / Agents SDK** (programmatic access for orchestration). For CI automation, the two directly relevant surfaces are the GitHub Action (which installs the CLI and proxies the Responses API inside a runner) and the Responses API / Agents SDK (which provides programmatic orchestration without a GitHub-specific wrapper). The Codex Cloud and GitHub App integration are user-facing products that operate under OpenAI's own cloud infrastructure and require a ChatGPT identity login, making them suitable for developer-interactive workflows but constrained for fully headless automation that must run under a project-owned GitHub App identity.
 
 Sources: [developers.openai.com/codex](https://developers.openai.com/codex) (fetched 2026-05-20), [openai.com/codex/](https://openai.com/codex/) (fetched 2026-05-20).
 
@@ -35,7 +35,7 @@ Source: [developers.openai.com/codex/cloud](https://developers.openai.com/codex/
 **Authentication.** Requires ChatGPT account sign-in (OAuth). The GitHub connector uses **short-lived, least-privilege GitHub App installation tokens** for each operation, derived from the user's connected GitHub account.
 Source: [developers.openai.com/codex/enterprise/](https://developers.openai.com/codex/enterprise/) (fetched 2026-05-20).
 
-**Subscription tiers.** Plus, Pro, Business, Edu, Enterprise. Free tier: basic exploration only; limited cloud task access.
+**Subscription tiers.** Free, Go ($8/mo), Plus ($20/mo), Pro, Business, Edu, Enterprise. Free and Go tiers carry strict usage limits; limited cloud task access. Plus and above are viable for regular interactive use.
 Source: [developers.openai.com/codex/pricing](https://developers.openai.com/codex/pricing) (fetched 2026-05-20).
 
 **Sandbox model.** Each task runs in an isolated container environment. Internet access from the sandbox is admin-controlled in Enterprise (admins decide whether Codex can reach the public internet). The exact sandbox technology (container runtime, filesystem isolation) is not documented in the public developer docs.
@@ -121,7 +121,7 @@ Source: [github.com/openai/codex-action/releases](https://github.com/openai/code
 
 **What it is.** A composite GitHub Action that:
 1. Installs the Codex CLI (`@openai/codex`) via npm.
-2. Starts an OpenAI Responses API proxy when an `openai-api-key` is provided.
+2. Starts an OpenAI Responses API proxy (`openai-api-key` is marked required in the inputs table below; `unverified:` whether the action falls back to subscription auth if the key is absent — the "only when provided" reading from the action README conflicts with the `(required)` annotation in `action.yml`).
 3. Runs `codex exec` under the selected sandbox mode.
 4. Exposes the final Codex message as a job output (`final-message`).
 
@@ -596,7 +596,7 @@ Source: [developers.openai.com/api/docs/models/gpt-5-codex](https://developers.o
 
 Note: The "credits/1M" Business-tier figures from the Codex pricing page use a proprietary credit denomination, not USD. The direct-USD API pricing for `gpt-5-codex` is confirmed from the models doc; Business-tier credit rates for other models are included for reference but their USD equivalents are not confirmed.
 
-**Rough cost estimate for a PR review.** A typical PR diff (5K tokens input, 2K tokens output) with `gpt-5-codex` costs approximately $0.006 input + $0.02 output = ~$0.026 per review. A large diff (50K tokens) costs ~$0.26 per review. These are estimates; actual costs depend on how many non-diff files Codex reads during review.
+**Rough cost estimate for a PR review.** A typical PR diff (5K tokens input, 2K tokens output) with `gpt-5-codex` costs approximately $0.006 input + $0.02 output = ~$0.026 per review. A large diff (50K tokens input, 2K tokens output) costs $0.0625 input + $0.020 output = ~$0.08 per review. These are estimates; actual costs depend on how many non-diff files Codex reads during review.
 
 Community estimate: average ~$100–200/developer/month for full interactive use. CI-specific cost will be lower but depends heavily on diff size and review frequency.
 Source: [developers.openai.com/codex/pricing](https://developers.openai.com/codex/pricing) (fetched 2026-05-20).
@@ -609,7 +609,7 @@ Source: [developers.openai.com/codex/pricing](https://developers.openai.com/code
 
 ### 6.4 Rate Limits Relevant to CI Burst Patterns
 
-For `gpt-5-codex` at Tier 1 (default new API accounts): 500 RPM, 500K TPM. For a team running 50 concurrent PRs each triggering a review simultaneously, each review using a single API call, Tier 1 would be adequate. For burst patterns (e.g., a merge queue processing 100+ PRs at once), Tier 2 (5,000 RPM, 1M TPM) is recommended.
+For `gpt-5-codex` at Tier 1 (default new API accounts): 500 RPM, 500K TPM. For a team running 50 concurrent PRs each triggering a review simultaneously, each review using a single API call, Tier 1 is adequate on RPM alone — but the 500K TPM ceiling is the binding constraint for full-context diffs: at 50K tokens/review, 50 simultaneous reviews would require 2.5M tokens, ~5× the TPM limit, throttling effective burst concurrency to roughly 10 reviews at a time. For sustained burst patterns (e.g., a merge queue processing 100+ PRs at once), Tier 2 (5,000 RPM, 1M TPM) is recommended.
 
 Rate limit tiers are determined by API usage history and spend, not by subscription. New API accounts start at Tier 1.
 Source: [developers.openai.com/api/docs/models/gpt-5-codex](https://developers.openai.com/api/docs/models/gpt-5-codex) (fetched 2026-05-20).
