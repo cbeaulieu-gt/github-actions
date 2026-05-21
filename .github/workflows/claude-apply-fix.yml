@@ -40,7 +40,7 @@ jobs:
     # Phase 5: pin the fix overlay image by SHA256 digest. The fix overlay
     # carries the agent set required for code-write tasks (per spec §7.5).
     # Digest source: STAGE 3 build run 25405636887 (post-#200 rebuild, 3bb6a22) — base image bakes safe.directory '*' (#199, #197).
-    container: ghcr.io/glitchwerks/claude-runtime-fix@sha256:099fd3ee04879c81f9f68b613e728622f71b781f28ade06c6d4beb39c9a3f23d
+    container: ghcr.io/glitchwerks/claude-runtime-fix@sha256:4c921493e27f157f7d47b9755bc530d314ff421625ffe7d670ad6308d6bcb0fc
     concurrency:
       group: claude-apply-fix-${{ github.repository }}-${{ inputs.pr_number }}
       cancel-in-progress: false
