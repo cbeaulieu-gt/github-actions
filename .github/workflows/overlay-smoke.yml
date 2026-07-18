@@ -44,8 +44,8 @@ jobs:
           set -euo pipefail
           # Grep all workflow files for lines referencing this overlay image and
           # extract the @sha256:<hex> suffix.  The authoritative pins live in
-          # claude-pr-review.yml (review), claude-apply-fix.yml (fix), and
-          # claude-tag-respond.yml (explain / all three in the case block).
+          # claude-apply-fix.yml (fix) and claude-tag-respond.yml (review / fix /
+          # explain — all three in its case block).
           IMG=$(grep -rh "claude-runtime-${OVERLAY}@sha256:" .github/workflows/ \
                   | grep -oE 'ghcr\.io/glitchwerks/claude-runtime-[^@]+@sha256:[a-f0-9]+' \
                   | sort -u \

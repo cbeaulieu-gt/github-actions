@@ -8,7 +8,6 @@ Drop-in caller workflows for `glitchwerks/github-actions` reusable workflows. Co
 
 | File | Reusable workflow | Trigger | Secrets required |
 |---|---|---|---|
-| `claude-pr-review.yml` | `claude-pr-review.yml@v2` | `pull_request` (opened/synchronize/reopened/ready_for_review) | `CLAUDE_CODE_OAUTH_TOKEN` |
 | `claude-tag-respond.yml` | `claude-tag-respond.yml@v2` | `issue_comment`, `pull_request_review_comment` (created) | `CLAUDE_CODE_OAUTH_TOKEN`, `APP_ID`, `APP_PRIVATE_KEY` |
 | `claude-lint-failure.yml` | `claude-lint-failure.yml@v2` | `pull_request` — fires `notify-claude` job when `lint` fails | `CLAUDE_CODE_OAUTH_TOKEN`, `APP_ID`, `APP_PRIVATE_KEY` |
 | `claude-ci-failure.yml` | `claude-ci-failure.yml@v2` | `workflow_run` on completion of a named CI workflow | `CLAUDE_CODE_OAUTH_TOKEN`, `APP_ID`, `APP_PRIVATE_KEY` |

@@ -102,7 +102,6 @@ Each should print `"internal"`. If any package returns `"private"` instead:
 
 | What you want Claude to do | Template to copy |
 |---|---|
-| Review every PR for code quality, security, and test coverage | `examples/claude-pr-review.yml` |
 | Respond to `@claude` mentions in PR and issue comments | `examples/claude-tag-respond.yml` |
 | Diagnose (and optionally fix) lint failures on a PR | `examples/claude-lint-failure.yml` |
 | Diagnose (and optionally fix) CI failures | `examples/claude-ci-failure.yml` |
@@ -144,9 +143,8 @@ After committing the workflow file to the consumer repo's default branch (or a P
 
 1. **Open a tiny test PR.** A one-line README change is sufficient. Mark it "ready for review" (not draft).
 2. **Wait ~2–3 minutes.** The Actions runner must pull the container image on first run; subsequent runs are faster.
-3. **Check the PR timeline.** Expect a Claude review comment posted by `github-actions[bot]` (for PR review) or your App's bot identity (for write-capable workflows).
+3. **Check the PR timeline.** Expect a Claude comment posted by your App's bot identity.
 4. **Check the Actions tab.** The workflow run should show as `success`. If it is `failure`, open the run and read the first failed step.
-5. **Check the commit status.** For PR review, a `claude-pr-review/quality-gate` status should appear on the PR's head commit — either `success` or `failure` depending on review content.
 
 If no comment appears after 5 minutes, proceed to [Step 6](#step-6--common-footguns).
 

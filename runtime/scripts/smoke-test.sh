@@ -124,8 +124,9 @@ fi
 echo "smoke-test: persona structural check OK (agents=$agent_count, skills=$skill_count, plugins=$plugin_count, all required files present)"
 
 # ---- (a.3) Reachability probe: overlay tree reachable via $HOME discovery ----
-# Validates that the cp -r step in pr-review/action.yml (issue #259) makes
-# baked agents discoverable when GHA overrides HOME to a fresh directory.
+# Validates that the `cp -r $HOME/.claude` install pattern used by composite
+# actions inside the overlay image makes baked agents discoverable when GHA
+# overrides HOME to a fresh directory.
 echo "smoke-test: reachability probe..."
 if ! docker run --rm --user "$SMOKE_UID" \
     -e HOME=/tmp/fake-home \

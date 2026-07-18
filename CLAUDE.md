@@ -34,7 +34,6 @@ The reusable workflows are thin wrappers that delegate to the composite actions 
 
 ### Actions
 
-- **`pr-review/`** — Reviews PRs via `anthropics/claude-code-action@v1`. On `synchronize` events, diffs only the new commits (`git diff before..after`) and escalates to a full review if foundational code is touched. Skips review while a PR is in draft; auto-fires once when the PR transitions to ready for review (per #174). Posts a `claude-pr-review/quality-gate` commit status (per #176) — `failure` when the latest review contains Critical/BLOCKING or High-Priority/MAJOR markers, `success` otherwise; intended to be required by branch protection rulesets.
 - **`tag-claude/`** — Responds to `@claude` mentions. Delegates to `./check-auth` first, then calls `claude-code-action` only if authorized.
 - **`claude-command-router/`** — Verb router (Phase 4). Parses `@claude <verb>` comment bodies into `{overlay, status, mode}` outputs for downstream dispatch. Pure string logic — no containers. Delegates auth to `check-auth/`. Wraps `lib/parse.sh` (a sourceable bash function — file scope sets no flags so callers' shells stay clean) plus a JSON test corpus at `tests/cases.json` exercised by `.github/workflows/test.yml` on every PR. Caller workflow `claude-tag-respond.yml` lands in Phase 5; eventual successor to `tag-claude/` (Phase 7). The Architecture list is ordered by responsibility, not alphabetically — this row is placed after `tag-claude/` (its successor) and before `check-auth/` (its dependency).
 - **`check-auth/`** — Authorization primitive. Outputs `authorized=true/false` based on an explicit `authorized_users` allowlist (takes precedence) or `github.event.comment.author_association` (OWNER/MEMBER/COLLABORATOR). Used by `tag-claude/` and `claude-command-router/`.
@@ -47,7 +46,6 @@ The `claude-*.yml` reusable workflows (everything except `ci-failure.yaml` and `
 
 - **`ci-failure.yaml`** — Triggered by `workflow_run` on CI failure. Fetches plain-text logs via `gh run view --log-failed`, writes them to `/tmp/ci_logs.txt`, calls `claude-code-action` to diagnose and optionally auto-apply a fix. **Not container-pinned** — kept until Phase 7 cutover; consumers should migrate to `claude-ci-failure.yml`.
 - **`apply-fix.yml`** — `workflow_dispatch` wrapper around `./apply-fix` for manual invocation. **Not container-pinned** — kept for the manual-trigger path.
-- **`claude-pr-review.yml`** — Container-pinned to `claude-runtime-review`. Both `pull_request_target` (this repo's dogfood) and `workflow_call` (external consumers).
 - **`claude-apply-fix.yml`** — `workflow_call`-only wrapper around `./apply-fix`, container-pinned to `claude-runtime-fix`. Phase 5 (#188) — consumer-facing reusable form of the manual-fix path.
 - **`claude-lint-failure.yml`** — `workflow_call`-only wrapper around `./lint-failure`, container-pinned to `claude-runtime-fix`. Per spec §7.5, both the read-only diagnosis path and the auto-apply path use the same overlay; behavior is gated by the `auto_apply` input.
 - **`claude-lint-fix.yml`** — Legacy two-job (`./lint-diagnose` + `./lint-apply`) form, NOT container-pinned. Kept until Phase 7 cutover; consumers should migrate to `claude-lint-failure.yml`.
@@ -60,7 +58,7 @@ The `claude-*.yml` reusable workflows (everything except `ci-failure.yaml` and `
 
 **Workflows with `container: ghcr.io/...` must declare `packages: read`** in their `permissions:` block when the image is in an org-owned private GHCR package. GitHub Actions issues an implicit `docker login + docker pull` before the job container starts, authenticated with `GITHUB_TOKEN`; without `packages: read` the registry returns `manifest unknown` (an authorization-masked error that looks like the image is missing). All five Phase 5 (#188) container-pinned reusable workflows hit this trap because their `permissions:` blocks were carried over from the pre-container form — see #192 for the diagnosis and the hotfix that added `packages: read` to each. Add this scope alongside `contents:`, `pull-requests:`, etc. for any future workflow with a `container:` directive pointing at GHCR.
 
-**Token selection for `claude-code-action`:** All workflows now use the resolved App token (`${{ steps.token.outputs.value }}`) for `github_token` — including `pr-review`, which does not push commits but benefits from a consistent App bot identity. The prior carve-out that used `github.token` (surfacing as `github-actions[bot]`) for read-only PR review was reversed under issue #250 for identity consistency across all Claude-powered workflows. GitHub suppresses `synchronize` events for pushes authenticated with `GITHUB_TOKEN`, so an App token is required to re-trigger downstream workflows like `pr-review` on those paths as well. App tokens are short-lived and show a distinct bot identity (e.g., `my-app[bot]`).
+**Token selection for `claude-code-action`:** All workflows use the resolved App token (`${{ steps.token.outputs.value }}`) for `github_token`. The prior `github.token` carve-out was reversed under issue #250 for identity consistency across all Claude-powered workflows. GitHub suppresses `synchronize` events for pushes authenticated with `GITHUB_TOKEN`, so an App token is required to re-trigger downstream workflows on those paths. App tokens are short-lived and show a distinct bot identity (e.g., `my-app[bot]`).
 
 **Composite action inputs are always strings** — there is no `type` field. Boolean inputs like `require_association` arrive as the string `'true'`/`'false'` and must be compared with `[ "$VAR" = "true" ]`.
 
@@ -103,5 +101,5 @@ When changes are released: move both `v2` and the new `v2.x.x` tag to the latest
 | Secret | Used by |
 |---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | All `claude-code-action` invocations |
-| `APP_ID` | `ci-failure.yaml`, `apply-fix`, `lint-failure`, `pr-review` — GitHub App ID for generating short-lived tokens for git push and API calls |
+| `APP_ID` | `ci-failure.yaml`, `apply-fix`, `lint-failure` — GitHub App ID for generating short-lived tokens for git push and API calls |
 | `APP_PRIVATE_KEY` | Same as above — GitHub App private key (PEM format) |
