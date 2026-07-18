@@ -122,15 +122,15 @@ If you need more control (e.g., embed the review step inside a larger job), use 
 ### Breaking changes
 
 - **All `uses:` references must change from `@v1` to `@v2`.** Every workflow or composite action call that pins to `@v1` must be updated.
-- **`gh_pat` input has been removed.** The deprecated `gh_pat` input is no longer accepted by any action. `app_id` + `app_private_key` are now required for all actions (`tag-claude`, `lint-failure`, `ci-failure`, `apply-fix`, `pr-review`).
+- **`gh_pat` input has been removed.** The deprecated `gh_pat` input is no longer accepted by any action. `app_id` + `app_private_key` are now required for all actions (`tag-claude`, `lint-failure`, `ci-failure`, `apply-fix`).
 - **`tag-claude` no longer falls back to `github.token`.** An App token is mandatory — omitting `app_id` and `app_private_key` will cause the action to fail at the token resolution step.
-- **All actions now post under the GitHub App's bot identity** (e.g., `my-app[bot]`) rather than under `github-actions[bot]` or a PAT's user identity. This includes `pr-review`, which previously used `github.token` (issue #250).
+- **All actions now post under the GitHub App's bot identity** (e.g., `my-app[bot]`) rather than under `github-actions[bot]` or a PAT's user identity.
 
 ### Migration steps
 
 1. Update every `uses: glitchwerks/github-actions/...@v1` line (and `uses: .github/workflows/...@v1`) to `@v2`.
 2. If you were passing `gh_pat`, create a GitHub App and add `APP_ID` + `APP_PRIVATE_KEY` as repository secrets. See the GitHub App setup section for instructions.
-3. For `tag-claude` and `pr-review` consumers: ensure your caller workflow passes `app_id` and `app_private_key` secrets.
+3. For `tag-claude` consumers: ensure your caller workflow passes `app_id` and `app_private_key` secrets.
 
 ### Before and after
 
