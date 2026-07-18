@@ -10,7 +10,6 @@ Reusable GitHub Actions and workflows for Claude-powered automation — PR revie
 
 | Action | Description | Usage pattern |
 |---|---|---|
-| `pr-review` | Claude reviews a PR for code quality, security, performance, test coverage, and docs | Composite action or reusable workflow |
 | `tag-claude` | Claude responds to `@claude` mentions in issue and PR comments | Composite action or reusable workflow |
 | `lint-failure` | Claude diagnoses lint failures on a PR and optionally commits a fix | Composite action or reusable workflow |
 | `apply-fix` | Validates and applies a unified diff to a PR branch (manual or via auto-fix) | Composite action or reusable workflow |
@@ -27,7 +26,6 @@ The table below shows the minimum required permissions for each consumer workflo
 
 | Workflow | Trigger | Required `permissions:` block |
 |---|---|---|
-| PR Review | `pull_request` | `contents: read`<br>`pull-requests: write`<br>`packages: read` |
 | Tag Claude | `issue_comment` + `pull_request_review_comment` | `contents: write`<br>`issues: write`<br>`pull-requests: write`<br>`packages: read` |
 | Claude Lint Failure | `pull_request` (via `needs: [lint]`, `if: failure()`) | `contents: write`<br>`pull-requests: write`<br>`actions: read`<br>`packages: read` |
 | CI Failure Diagnosis | `workflow_run` | `contents: write`<br>`pull-requests: write`<br>`packages: read` |
@@ -38,40 +36,6 @@ The table below shows the minimum required permissions for each consumer workflo
 ## Quick Start
 
 The easiest way to consume these actions is via the **reusable workflow** pattern. Add one file to your repo and you're done.
-
-### PR Review
-
-```yaml
-# .github/workflows/pr-review.yml
-name: PR Review
-
-on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-
-# Permissions must be declared at workflow level (not job level) when calling
-# reusable workflows. pull_request events default to pull-requests: none.
-permissions:
-  contents: read
-  pull-requests: write
-  packages: read
-
-jobs:
-  review:
-    uses: glitchwerks/github-actions/.github/workflows/claude-pr-review.yml@v2
-    secrets:
-      claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      app_id: ${{ secrets.APP_ID }}
-      app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
-```
-
-Optional inputs:
-
-```yaml
-    with:
-      model: claude-opus-4-5   # default: claude-sonnet-4-5
-      max_turns: '20'          # default: 15
-```
 
 ### Tag Claude
 
@@ -149,7 +113,6 @@ jobs:
 
 If you need more control (e.g., embed the review step inside a larger job), use the composite actions directly instead of the reusable workflows.
 
-- [`pr-review/`](./pr-review/README.md) — composite action docs and examples
 - [`tag-claude/`](./tag-claude/README.md) — composite action docs and examples
 
 ---
@@ -159,15 +122,15 @@ If you need more control (e.g., embed the review step inside a larger job), use 
 ### Breaking changes
 
 - **All `uses:` references must change from `@v1` to `@v2`.** Every workflow or composite action call that pins to `@v1` must be updated.
-- **`gh_pat` input has been removed.** The deprecated `gh_pat` input is no longer accepted by any action. `app_id` + `app_private_key` are now required for all actions (`tag-claude`, `lint-failure`, `ci-failure`, `apply-fix`, `pr-review`).
+- **`gh_pat` input has been removed.** The deprecated `gh_pat` input is no longer accepted by any action. `app_id` + `app_private_key` are now required for all actions (`tag-claude`, `lint-failure`, `ci-failure`, `apply-fix`).
 - **`tag-claude` no longer falls back to `github.token`.** An App token is mandatory — omitting `app_id` and `app_private_key` will cause the action to fail at the token resolution step.
-- **All actions now post under the GitHub App's bot identity** (e.g., `my-app[bot]`) rather than under `github-actions[bot]` or a PAT's user identity. This includes `pr-review`, which previously used `github.token` (issue #250).
+- **All actions now post under the GitHub App's bot identity** (e.g., `my-app[bot]`) rather than under `github-actions[bot]` or a PAT's user identity.
 
 ### Migration steps
 
 1. Update every `uses: glitchwerks/github-actions/...@v1` line (and `uses: .github/workflows/...@v1`) to `@v2`.
 2. If you were passing `gh_pat`, create a GitHub App and add `APP_ID` + `APP_PRIVATE_KEY` as repository secrets. See the GitHub App setup section for instructions.
-3. For `tag-claude` and `pr-review` consumers: ensure your caller workflow passes `app_id` and `app_private_key` secrets.
+3. For `tag-claude` consumers: ensure your caller workflow passes `app_id` and `app_private_key` secrets.
 
 ### Before and after
 
@@ -479,4 +442,4 @@ actionlint               # from repo root
 ## Prerequisites
 
 - A `CLAUDE_CODE_OAUTH_TOKEN` secret must be set on the consuming repository (or organization). Obtain this token from [claude.ai](https://claude.ai).
-- A GitHub App (`APP_ID` + `APP_PRIVATE_KEY`) is required for all actions — for identity consistency (`pr-review`) and write operations (git push, triggering downstream workflows) in the others. See the GitHub App setup section under CI Failure Diagnosis for instructions.
+- A GitHub App (`APP_ID` + `APP_PRIVATE_KEY`) is required for all actions — for a consistent bot identity and for write operations (git push, triggering downstream workflows). See the GitHub App setup section under CI Failure Diagnosis for instructions.

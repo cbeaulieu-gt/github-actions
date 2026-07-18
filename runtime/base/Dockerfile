@@ -65,7 +65,7 @@ RUN apt-get update \
 RUN git config --system --add safe.directory '*'
 
 # Install GitHub CLI (`gh`) from the official cli.github.com apt repo.
-# Required by composite actions in this repo (pr-review, apply-fix, lint-failure,
+# Required by composite actions in this repo (apply-fix, lint-failure,
 # ci-failure, tag-claude) — they shell out to `gh` for PR diff fetching, status
 # creation, comment posting, and dedup. claude-code-action@v1 also exposes gh
 # subcommands to the AI via --allowedTools (Bash(gh pr diff:*), Bash(gh pr review:*),

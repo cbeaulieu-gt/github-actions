@@ -781,7 +781,7 @@ jobs:
   # -------------------------------------------------------------------------
   # Per spec §6.2 STAGE 5 + §9.3. Only one of (push to main / workflow_dispatch)
   # may open a promote PR — PR validation must NOT cascade. The single commit
-  # produced bumps all 7 @sha256: occurrences across 5 reusable workflows
+  # produced bumps all 6 @sha256: occurrences across 4 reusable workflows
   # atomically; consumers see either the new set or the old set, never a mix.
   # cancel-in-progress: false is deliberate — an in-flight promote completes
   # before the next one starts so each promote PR opens against a fully-bumped
@@ -872,7 +872,6 @@ jobs:
         run: |
           set -euo pipefail
           FILES=(
-            .github/workflows/claude-pr-review.yml
             .github/workflows/claude-apply-fix.yml
             .github/workflows/claude-lint-failure.yml
             .github/workflows/claude-ci-failure.yml
@@ -885,13 +884,13 @@ jobs:
               -e "s|claude-runtime-explain@sha256:[a-f0-9]{64}|claude-runtime-explain@sha256:${EXPLAIN_DIGEST}|g" \
               "$f"
           done
-          # Verify exactly 7 occurrences land. SC2126: grep -c instead of grep|wc -l;
+          # Verify exactly 6 occurrences land. SC2126: grep -c instead of grep|wc -l;
           # but on multiple files grep -c prints <file>:<count> per file, so sum
           # them with awk to get the total.
           total=$(grep -cE "claude-runtime-(review|fix|explain)@sha256:[a-f0-9]{64}" "${FILES[@]}" \
             | awk -F: '{s+=$NF} END {print s+0}')
-          if [ "$total" -ne 7 ]; then
-            echo "ERROR digest_count_mismatch expected=7 actual=$total" >&2
+          if [ "$total" -ne 6 ]; then
+            echo "ERROR digest_count_mismatch expected=6 actual=$total" >&2
             exit 1
           fi
           echo "digest pin rewrite: $total references updated"
@@ -902,7 +901,7 @@ jobs:
           {
             echo "## Runtime image promotion @${{ github.sha }}"
             echo
-            echo "Atomic digest bump across 5 reusable workflows (7 \`@sha256:\` occurrences) per spec §6.2 STAGE 5. Merging this PR is the promote."
+            echo "Atomic digest bump across 4 reusable workflows (6 \`@sha256:\` occurrences) per spec §6.2 STAGE 5. Merging this PR is the promote."
             echo
             echo "### Promoted images"
             echo
@@ -922,7 +921,7 @@ jobs:
           commit-message: |
             promote: runtime images @${{ github.sha }}
 
-            Atomic digest bump across 5 reusable workflows (7 occurrences).
+            Atomic digest bump across 4 reusable workflows (6 occurrences).
             See PR body for OCI labels.
           branch: auto/runtime-promote-${{ github.sha }}
           delete-branch: true

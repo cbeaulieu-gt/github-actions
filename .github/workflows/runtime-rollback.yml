@@ -1,8 +1,8 @@
 name: runtime-rollback
 
 # Per spec §9.3 + Phase 6 plan Task 6.3 (#144). Targeted rollback for
-# the digest-pinned overlay set: opens a PR reverting all 7 @sha256:
-# references across 5 reusable workflows to the digest set tagged
+# the digest-pinned overlay set: opens a PR reverting all 6 @sha256:
+# references across 4 reusable workflows to the digest set tagged
 # :<target_pubsha> in GHCR. Mirrors STAGE 5's PR mechanism in reverse.
 #
 # Authorization model (plan §"Authorization model — Option A"):
@@ -231,7 +231,6 @@ jobs:
         run: |
           set -euo pipefail
           FILES=(
-            .github/workflows/claude-pr-review.yml
             .github/workflows/claude-apply-fix.yml
             .github/workflows/claude-lint-failure.yml
             .github/workflows/claude-ci-failure.yml
@@ -244,12 +243,12 @@ jobs:
               -e "s|claude-runtime-explain@sha256:[a-f0-9]{64}|claude-runtime-explain@sha256:${EXPLAIN_DIGEST}|g" \
               "$f"
           done
-          # Verify exactly 7 occurrences land. SC2126: grep -c instead of grep|wc -l;
+          # Verify exactly 6 occurrences land. SC2126: grep -c instead of grep|wc -l;
           # on multiple files grep -c prints <file>:<count> per file, so sum with awk.
           total=$(grep -cE "claude-runtime-(review|fix|explain)@sha256:[a-f0-9]{64}" "${FILES[@]}" \
             | awk -F: '{s+=$NF} END {print s+0}')
-          if [ "$total" -ne 7 ]; then
-            echo "::error::digest_count_mismatch expected=7 actual=$total" >&2
+          if [ "$total" -ne 6 ]; then
+            echo "::error::digest_count_mismatch expected=6 actual=$total" >&2
             exit 1
           fi
           echo "rollback digest pin rewrite: $total references updated"
@@ -262,7 +261,7 @@ jobs:
           {
             echo "## Rollback to runtime images @${TARGET}"
             echo
-            echo "Targeted rollback per spec §9.3. Restores all 7 \`@sha256:\` references across 5 reusable workflows to the digest set tagged \`:${TARGET}\` in GHCR."
+            echo "Targeted rollback per spec §9.3. Restores all 6 \`@sha256:\` references across 4 reusable workflows to the digest set tagged \`:${TARGET}\` in GHCR."
             echo
             echo "### Restored digests"
             echo
@@ -276,7 +275,7 @@ jobs:
             echo "- \`org.opencontainers.image.revision\` label on each digest matches \`${TARGET}\` (no tag retag drift)."
             echo "- \`inventory-match.sh\` passed against each overlay's \`expected.yaml\` contract."
             echo "- \`smoke-test.sh\` passed for each overlay (same battery as STAGE 4)."
-            echo "- \`sed -E\` substitution updated exactly 7 occurrences (assertion in workflow)."
+            echo "- \`sed -E\` substitution updated exactly 6 occurrences (assertion in workflow)."
             echo
             echo "### Reviewer checklist"
             echo
@@ -315,8 +314,8 @@ jobs:
           commit-message: |
             rollback: runtime images @${{ inputs.target_pubsha }}
 
-            Targeted rollback per spec §9.3. Restores 7 @sha256: references
-            across 5 reusable workflows to the digest set tagged
+            Targeted rollback per spec §9.3. Restores 6 @sha256: references
+            across 4 reusable workflows to the digest set tagged
             :${{ inputs.target_pubsha }} in GHCR.
           branch: auto/runtime-rollback-${{ inputs.target_pubsha }}
           delete-branch: true

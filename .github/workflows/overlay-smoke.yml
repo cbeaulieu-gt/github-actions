@@ -42,18 +42,24 @@ jobs:
           OVERLAY: ${{ matrix.overlay }}
         run: |
           set -euo pipefail
-          # Grep all workflow files for lines referencing this overlay image and
+          # Grep claude-*.yml workflow files for lines referencing this overlay image and
           # extract the @sha256:<hex> suffix.  The authoritative pins live in
-          # claude-pr-review.yml (review), claude-apply-fix.yml (fix), and
-          # claude-tag-respond.yml (explain / all three in the case block).
-          IMG=$(grep -rh "claude-runtime-${OVERLAY}@sha256:" .github/workflows/ \
-                  | grep -oE 'ghcr\.io/glitchwerks/claude-runtime-[^@]+@sha256:[a-f0-9]+' \
-                  | sort -u \
-                  | head -n1)
-          if [ -z "$IMG" ]; then
-            echo "::error::No digest found for overlay '${OVERLAY}' in .github/workflows/"
+          # claude-apply-fix.yml (fix) and claude-tag-respond.yml (review / fix /
+          # explain — all three in its case block).
+          IMAGES=$(grep -h "claude-runtime-${OVERLAY}@sha256:" .github/workflows/claude-*.yml \
+                     | grep -oE "ghcr\.io/glitchwerks/claude-runtime-${OVERLAY}@sha256:[a-f0-9]+" \
+                     | sort -u || true)
+          if [ -z "$IMAGES" ]; then
+            echo "::error::No digest found for overlay '${OVERLAY}' in .github/workflows/claude-*.yml"
             exit 1
           fi
+          IMAGE_COUNT=$(printf '%s\n' "$IMAGES" | wc -l)
+          if [ "$IMAGE_COUNT" -gt 1 ]; then
+            CONFLICTS=$(printf '%s\n' "$IMAGES" | paste -sd ',' - | sed 's/,/, /g')
+            echo "::error::Conflicting digest pins found for overlay '${OVERLAY}': ${CONFLICTS}"
+            exit 1
+          fi
+          IMG="$IMAGES"
           echo "image=${IMG}" >> "$GITHUB_OUTPUT"
           echo "Resolved: ${IMG}"
 
