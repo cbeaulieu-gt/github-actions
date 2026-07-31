@@ -87,6 +87,11 @@ Optional inputs:
 
 By default, only commenters with an `author_association` of `OWNER`, `MEMBER`, or `COLLABORATOR` can trigger Claude. This prevents arbitrary GitHub users from consuming your Claude quota.
 
+MCP server opt-in is not enabled by default. Before adding MCP servers to these
+actions, use the [MCP allowlist security checklist](docs/mcp-allowlist-security.md)
+to document publisher trust, package pinning, token scope, `allowedTools`
+impact, structured JSON construction, and failure behavior.
+
 | Scenario | Configuration |
 |---|---|
 | Default — org members and collaborators only | _(no extra config needed)_ |
